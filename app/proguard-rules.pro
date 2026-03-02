@@ -1,0 +1,3 @@
+-keep class fi.nanohttpd.** { *; }
+-keep class fi.deeplog.bridge.** { *; }
+-dontwarn fi.nanohttpd.**
