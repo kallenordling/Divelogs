@@ -18,11 +18,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.*
 import android.util.Log
-import fi.nanohttpd.protocols.http.IHTTPSession
-import fi.nanohttpd.protocols.http.NanoHTTPD
-import fi.nanohttpd.protocols.http.response.Response
-import fi.nanohttpd.protocols.http.response.Response.newFixedLengthResponse
-import fi.nanohttpd.protocols.http.response.Status
+import org.nanohttpd.protocols.http.IHTTPSession
+import org.nanohttpd.protocols.http.NanoHTTPD
+import org.nanohttpd.protocols.http.response.Response
+import org.nanohttpd.protocols.http.response.Response.newFixedLengthResponse
+import org.nanohttpd.protocols.http.response.Status
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
