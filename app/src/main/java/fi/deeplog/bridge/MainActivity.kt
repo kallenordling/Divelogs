@@ -24,7 +24,7 @@ import androidx.core.content.ContextCompat
 import fi.deeplog.bridge.databinding.ActivityMainBinding
 
 // Replace with your deployed DeepLog URL after GitHub Pages / Netlify deploy
-private const val DEEPLOG_URL = "https://kallenordling.github.io/deeplog"
+private const val DEEPLOG_URL = "https://YOUR_USERNAME.github.io/deeplog"
 
 class MainActivity : AppCompatActivity() {
 

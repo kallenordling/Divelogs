@@ -73,8 +73,7 @@
         android:fontFamily="monospace"
         android:paddingStart="12dp"
         android:paddingEnd="12dp"
-        android:inputType="textNoSuggestions"
-        android:autocorrect="false"
+        android:inputType="textNoSuggestions|textVisiblePassword"
         android:layout_marginBottom="24dp"/>
 
     <!-- Start / Stop -->
