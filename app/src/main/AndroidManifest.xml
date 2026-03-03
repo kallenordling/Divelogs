@@ -22,7 +22,7 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
 
     <application
-        android:label="DeepLog Bridge"
+        android:label="DeepLog"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/Theme.DeepLogBridge"
         android:allowBackup="false">

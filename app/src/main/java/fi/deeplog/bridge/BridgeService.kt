@@ -81,6 +81,11 @@ data class BridgeState(
 
 class BridgeService : Service() {
 
+    companion object {
+        var instance: BridgeService? = null
+        var currentState: BridgeState? = null
+    }
+
     private val scope      = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val state      = AtomicReference(BridgeState())
     private var httpServer : BridgeHttpServer? = null
@@ -90,6 +95,7 @@ class BridgeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("Bridge running on :$PORT"))
         httpServer = BridgeHttpServer(PORT, this).also { it.start() }
@@ -103,6 +109,7 @@ class BridgeService : Service() {
     }
 
     override fun onDestroy() {
+        instance = null
         httpServer?.stop()
         scope.cancel()
         super.onDestroy()
@@ -529,6 +536,7 @@ class BridgeService : Service() {
 
     private fun setState(s: BridgeState) {
         state.set(s)
+        currentState = s
         updateNotification(s.message.ifEmpty { "Bridge running on :$PORT" })
     }
 
