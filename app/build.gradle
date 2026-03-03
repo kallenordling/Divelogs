@@ -34,7 +34,6 @@ android {
 
 dependencies {
     // Tiny embedded HTTP server — single jar, no transitive deps
-    implementation 'org.nanohttpd:nanohttpd:2.3.1'
 
     // Kotlin coroutines for BLE async work
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'

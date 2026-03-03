@@ -18,11 +18,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.*
 import android.util.Log
-import org.nanohttpd.protocols.http.IHTTPSession
-import org.nanohttpd.protocols.http.NanoHTTPD
-import org.nanohttpd.protocols.http.response.Response
-import org.nanohttpd.protocols.http.response.Response.newFixedLengthResponse
-import org.nanohttpd.protocols.http.response.Status
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.PrintWriter
+import java.net.ServerSocket
+import java.net.Socket
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -591,53 +591,121 @@ data class DiveSummary(
     )
 }
 
-// ── NanoHTTPD HTTP server ─────────────────────────────────────────────────────
+// ── Minimal HTTP server (stdlib only, no dependencies) ───────────────────────
 //
-// Exposes exactly the same REST API as suunto_bridge.py so the web app
-// needs zero changes to work with this native Android bridge.
+// Plain Java ServerSocket — no third-party library needed.
+// Handles GET /health, GET /status, POST /download, POST /reset
+// with CORS headers so the WebView JS bridge also works as HTTP fallback.
 
-class BridgeHttpServer(port: Int, private val svc: BridgeService) : NanoHTTPD(port) {
+class BridgeHttpServer(private val port: Int, private val svc: BridgeService) {
 
-    override fun serve(session: IHTTPSession): Response {
-        val path   = session.uri
-        val method = session.method.name
+    private var serverSocket: ServerSocket? = null
+    private var running = false
+    private val executor = java.util.concurrent.Executors.newCachedThreadPool()
 
-        // CORS — allow Chrome on the same device to call localhost
-        fun json(body: String, status: Status = Status.OK): Response =
-            newFixedLengthResponse(status, "application/json", body).also {
-                it.addHeader("Access-Control-Allow-Origin",  "*")
-                it.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                it.addHeader("Access-Control-Allow-Headers", "Content-Type")
+    fun start() {
+        running = true
+        executor.execute {
+            try {
+                serverSocket = ServerSocket(port).also { ss ->
+                    ss.reuseAddress = true
+                    while (running) {
+                        try { handle(ss.accept()) } catch (_: Exception) {}
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("BridgeHttp", "Server error: ${e.message}")
             }
+        }
+    }
 
-        if (method == "OPTIONS") return json("", Status.NO_CONTENT)
+    fun stop() {
+        running = false
+        runCatching { serverSocket?.close() }
+        executor.shutdownNow()
+    }
+
+    private fun handle(socket: Socket) {
+        executor.execute {
+            try {
+                socket.use {
+                    val reader = BufferedReader(InputStreamReader(it.getInputStream()))
+                    val writer = PrintWriter(it.getOutputStream(), true)
+
+                    // Read request line + headers
+                    val requestLine = reader.readLine() ?: return@use
+                    val parts  = requestLine.split(" ")
+                    if (parts.size < 2) return@use
+                    val method = parts[0]
+                    val path   = parts[1].split("?")[0]
+
+                    // Read headers
+                    val headers = mutableMapOf<String, String>()
+                    var contentLength = 0
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        if (line.isEmpty()) break
+                        val colon = line.indexOf(':')
+                        if (colon > 0) {
+                            val k = line.substring(0, colon).trim().lowercase()
+                            val v = line.substring(colon + 1).trim()
+                            headers[k] = v
+                            if (k == "content-length") contentLength = v.toIntOrNull() ?: 0
+                        }
+                    }
+
+                    // Read body
+                    val body = if (contentLength > 0) {
+                        val buf = CharArray(contentLength)
+                        reader.read(buf, 0, contentLength)
+                        String(buf)
+                    } else ""
+
+                    // Route
+                    val (status, json) = route(method, path, body)
+
+                    // Write response
+                    val bytes = json.toByteArray(Charsets.UTF_8)
+                    writer.print("HTTP/1.1 $status\r\n")
+                    writer.print("Content-Type: application/json\r\n")
+                    writer.print("Content-Length: ${bytes.size}\r\n")
+                    writer.print("Access-Control-Allow-Origin: *\r\n")
+                    writer.print("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+                    writer.print("Access-Control-Allow-Headers: Content-Type\r\n")
+                    writer.print("Connection: close\r\n")
+                    writer.print("\r\n")
+                    writer.flush()
+                    it.getOutputStream().write(bytes)
+                    it.getOutputStream().flush()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun route(method: String, path: String, body: String): Pair<String, String> {
+        if (method == "OPTIONS") return "204 No Content" to ""
 
         return when {
-            path == "/health" && method == "GET" -> json(
-                """{"ok":true,"dctool":"android-native","version":"1.0.0"}"""
-            )
+            path == "/health" && method == "GET" ->
+                "200 OK" to """{"ok":true,"dctool":"android-native","version":"1.0.0"}"""
 
-            path == "/status" && method == "GET" -> json(svc.getState())
+            path == "/status" && method == "GET" ->
+                "200 OK" to svc.getState()
 
             path == "/download" && method == "POST" -> {
-                val body = try {
-                    val buf = HashMap<String, String>()
-                    session.parseBody(buf)
-                    JSONObject(buf["postData"] ?: "{}")
-                } catch (_: Exception) { JSONObject() }
-
-                val address  = body.optString("address").ifEmpty { null }
-                val user     = body.optString("username").ifEmpty { "anonymous" }
+                val obj     = try { JSONObject(body) } catch (_: Exception) { JSONObject() }
+                val address = obj.optString("address").ifEmpty { null }
+                val user    = obj.optString("username").ifEmpty { "anonymous" }
                 svc.startDownload(address, user)
-                json("""{"started":true}""")
+                "200 OK" to """{"started":true}"""
             }
 
             path == "/reset" && method == "POST" -> {
                 svc.resetState()
-                json("""{"ok":true}""")
+                "200 OK" to """{"ok":true}"""
             }
 
-            else -> json("""{"error":"not found"}""", Status.NOT_FOUND)
+            else -> "404 Not Found" to """{"error":"not found"}"""
         }
     }
 }
