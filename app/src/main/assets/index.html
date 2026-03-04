@@ -409,14 +409,28 @@
   }
 
   .computer-picker { display:flex; flex-direction:column; gap:0.6rem; }
+  .computer-picker-section-label {
+    font-size:0.54rem; letter-spacing:2.5px; text-transform:uppercase;
+    color:var(--muted); margin-top:0.4rem; margin-bottom:0.1rem; padding-left:0.1rem;
+  }
   .computer-card {
     border:1px solid var(--border); border-radius:10px;
-    padding:1rem 1.1rem; cursor:pointer; transition:all 0.15s;
-    background:var(--surface);
+    padding:0.85rem 1.1rem; cursor:pointer; transition:all 0.15s;
+    background:var(--surface); display:flex; align-items:center; gap:0.7rem;
   }
   .computer-card:hover { border-color:var(--accent); background:rgba(0,212,255,0.06); box-shadow:var(--glow); }
-  .computer-card-name { font-family:var(--display); font-size:1.05rem; font-weight:800; color:white; margin-bottom:0.25rem; }
-  .computer-card-models { font-size:0.6rem; color:var(--muted); }
+  .computer-card.soon { opacity:0.6; cursor:default; }
+  .computer-card.soon:hover { border-color:var(--border); background:var(--surface); box-shadow:none; }
+  .computer-card-info { flex:1; }
+  .computer-card-name { font-family:var(--display); font-size:1rem; font-weight:800; color:white; margin-bottom:0.2rem; }
+  .computer-card-models { font-size:0.58rem; color:var(--muted); line-height:1.5; }
+  .computer-card-badge {
+    flex-shrink:0; font-size:0.5rem; letter-spacing:1px; text-transform:uppercase;
+    padding:0.2rem 0.5rem; border-radius:20px; font-family:var(--mono);
+  }
+  .badge-ready { border:1px solid rgba(38,222,129,0.35); color:var(--green); background:rgba(38,222,129,0.07); }
+  .badge-partial { border:1px solid rgba(255,159,67,0.35); color:var(--warm); background:rgba(255,159,67,0.07); }
+  .badge-soon { border:1px solid var(--border); color:var(--muted); }
 
 </style>
 </head>
@@ -480,14 +494,77 @@
     <div class="panel-label">Connect Device</div>
 
     <div class="computer-picker" id="computer-picker">
+
+      <div class="computer-picker-section-label">Fully supported</div>
+
       <div class="computer-card" onclick="selectComputer('shearwater')">
-        <div class="computer-card-name">Shearwater</div>
-        <div class="computer-card-models">Perdix 2 &middot; Perdix &middot; Teric &middot; Peregrine</div>
+        <div class="computer-card-info">
+          <div class="computer-card-name">Shearwater</div>
+          <div class="computer-card-models">Perdix 2 &middot; Perdix &middot; Teric &middot; Peregrine &middot; Tern &middot; NERD &middot; Petrel</div>
+        </div>
+        <span class="computer-card-badge badge-ready">Ready</span>
       </div>
+
       <div class="computer-card" onclick="selectComputer('suunto')">
-        <div class="computer-card-name">Suunto</div>
-        <div class="computer-card-models">EON Steel &middot; EON Core &middot; D5</div>
+        <div class="computer-card-info">
+          <div class="computer-card-name">Suunto</div>
+          <div class="computer-card-models">EON Steel &middot; EON Core &middot; D5 &middot; G5</div>
+        </div>
+        <span class="computer-card-badge badge-ready">Ready</span>
       </div>
+
+      <div class="computer-picker-section-label">BLE connect &mdash; dive parsing in progress</div>
+
+      <div class="computer-card" onclick="selectComputer('hw_ostc')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Heinrichs-Weikamp</div>
+          <div class="computer-card-models">OSTC 4 &middot; OSTC 5 &middot; OSTC 2N &middot; OSTC Plus &middot; OSTC Sport</div>
+        </div>
+        <span class="computer-card-badge badge-partial">Beta</span>
+      </div>
+
+      <div class="computer-picker-section-label">Detected &mdash; coming soon</div>
+
+      <div class="computer-card soon" onclick="selectComputer('mares')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Mares</div>
+          <div class="computer-card-models">Genius &middot; Sirius &middot; Quad Air</div>
+        </div>
+        <span class="computer-card-badge badge-soon">Soon</span>
+      </div>
+
+      <div class="computer-card soon" onclick="selectComputer('pelagic')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Oceanic / Aqualung</div>
+          <div class="computer-card-models">i330R &middot; i770R &middot; i200C &middot; DSX &middot; Sherwood Sage &middot; Apeks DSX</div>
+        </div>
+        <span class="computer-card-badge badge-soon">Soon</span>
+      </div>
+
+      <div class="computer-card soon" onclick="selectComputer('scubapro')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">ScubaPro</div>
+          <div class="computer-card-models">G2 &middot; G3 &middot; Aladin A1 &middot; Aladin A2 &middot; Luna 2.0</div>
+        </div>
+        <span class="computer-card-badge badge-soon">Soon</span>
+      </div>
+
+      <div class="computer-card soon" onclick="selectComputer('cressi')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Cressi</div>
+          <div class="computer-card-models">Cartesio &middot; Donatello &middot; Neon &middot; Nepto &middot; Goa</div>
+        </div>
+        <span class="computer-card-badge badge-soon">Soon</span>
+      </div>
+
+      <div class="computer-card soon" onclick="selectComputer('divesoft')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Divesoft</div>
+          <div class="computer-card-models">Freedom &middot; Liberty</div>
+        </div>
+        <span class="computer-card-badge badge-soon">Soon</span>
+      </div>
+
     </div>
 
     <div id="download-ui" style="display:none">
@@ -761,9 +838,26 @@ function showBtHelp(reason) {
 
 // ─── Computer picker ─────────────────────────────────────────────────────────
 
+const COMPUTER_LABELS = {
+  shearwater: 'Shearwater',
+  suunto:     'Suunto',
+  hw_ostc:    'Heinrichs-Weikamp OSTC',
+  mares:      'Mares',
+  pelagic:    'Oceanic / Aqualung',
+  scubapro:   'ScubaPro',
+  cressi:     'Cressi',
+  divesoft:   'Divesoft',
+};
+
 const COMPUTER_HINTS = {
-  shearwater: 'On your Perdix 2: press LEFT until <strong style="color:white">Bluetooth</strong> is highlighted, then press RIGHT to select. Keep the dive computer within 30 cm.',
-  suunto:     'On your EON Steel / Core: Settings &rarr; Connectivity &rarr; Airplane Mode: <strong style="color:white">Off</strong>. A passkey will appear on the dive computer screen &mdash; confirm it on your phone when prompted.',
+  shearwater: 'On your Shearwater: press <strong style="color:white">LEFT</strong> until Bluetooth is highlighted, then <strong style="color:white">RIGHT</strong> to activate. Keep the computer within 30 cm.',
+  suunto:     'On your Suunto: Settings &rarr; Connectivity &rarr; Airplane Mode: <strong style="color:white">Off</strong>. A passkey will appear on the dive computer &mdash; confirm it on your phone when prompted.',
+  hw_ostc:    'On your OSTC: navigate to <strong style="color:white">Bluetooth</strong> in the menu and activate BLE mode. Keep the computer within 30 cm. <em style="color:var(--warm)">Note: connection works but full dive parsing is still in development.</em>',
+  mares:      '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Mares: activate Bluetooth from the main menu. Your device will be detected but dive download is not yet available.',
+  pelagic:    '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Oceanic/Aqualung/Sherwood/Apeks: enable Bluetooth in device settings. Detection works; dive download is not yet available.',
+  scubapro:   '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your ScubaPro: enable Bluetooth in the device menu. Detection works; dive download is not yet available.',
+  cressi:     '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Cressi: activate Bluetooth from device settings. Detection works; dive download is not yet available.',
+  divesoft:   '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Divesoft: enable Bluetooth in the menu. Detection works; dive download is not yet available.',
 };
 
 let selectedComputer = null;
@@ -772,8 +866,7 @@ function selectComputer(type) {
   selectedComputer = type;
   document.getElementById('computer-picker').style.display = 'none';
   document.getElementById('download-ui').style.display = 'block';
-  document.getElementById('selected-computer-label').textContent =
-    type === 'shearwater' ? 'Shearwater' : 'Suunto';
+  document.getElementById('selected-computer-label').textContent = COMPUTER_LABELS[type] || type;
   document.getElementById('dl-prepare-hint').innerHTML = COMPUTER_HINTS[type] || '';
   document.getElementById('bridge-log').innerHTML = '';
   document.getElementById('bridge-progress-wrap').style.display = 'none';
