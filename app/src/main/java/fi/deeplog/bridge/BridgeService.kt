@@ -96,10 +96,14 @@ class BridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        createNotificationChannel()
-        startForeground(NOTIF_ID, buildNotification("Bridge running on :$PORT"))
-        httpServer = BridgeHttpServer(PORT, this).also { it.start() }
-        Log.i(TAG, "Bridge started on port $PORT")
+        try {
+            createNotificationChannel()
+            startForeground(NOTIF_ID, buildNotification("DeepLog running"))
+            httpServer = BridgeHttpServer(PORT, this).also { it.start() }
+            Log.i(TAG, "Bridge started on port $PORT")
+        } catch (e: Exception) {
+            Log.e(TAG, "BridgeService onCreate error: ${e.message}", e)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

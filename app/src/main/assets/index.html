@@ -407,6 +407,17 @@
     .bt-panel, .list-panel, .profile-panel, .map-panel { grid-column: 1; grid-row: auto; }
     .list-panel { max-height: 300px; }
   }
+
+  .computer-picker { display:flex; flex-direction:column; gap:0.6rem; }
+  .computer-card {
+    border:1px solid var(--border); border-radius:10px;
+    padding:1rem 1.1rem; cursor:pointer; transition:all 0.15s;
+    background:var(--surface);
+  }
+  .computer-card:hover { border-color:var(--accent); background:rgba(0,212,255,0.06); box-shadow:var(--glow); }
+  .computer-card-name { font-family:var(--display); font-size:1.05rem; font-weight:800; color:white; margin-bottom:0.25rem; }
+  .computer-card-models { font-size:0.6rem; color:var(--muted); }
+
 </style>
 </head>
 <body>
@@ -462,111 +473,41 @@
 
 <main>
   <!-- BT + Import Panel -->
+  <input type="hidden" id="bridge-url" value="http://127.0.0.1:8765">
+  <input type="hidden" id="bridge-address" value="">
+
   <div class="panel bt-panel">
     <div class="panel-label">Connect Device</div>
 
-    <div class="bt-tabs">
-      <button class="bt-tab active" onclick="switchTab('shearwater', this)">
-        Shearwater
-        <span class="bt-badge">Perdix 2 · BLE &#x2713;</span>
-      </button>
-      <button class="bt-tab" onclick="switchTab('suunto', this)">
-        Suunto
-        <span class="bt-badge">EON Steel/Core</span>
-      </button>
-      <button class="bt-tab" onclick="switchTab('bridge', this)">
-        Bridge
-        <span class="bt-badge" style="background:rgba(38,222,129,0.15);color:var(--green)">Local</span>
-      </button>
-    </div>
-
-    <!-- Shearwater BLE -->
-    <div class="bt-section active" id="section-shearwater">
-      <div class="bt-device-card">
-        <div class="device-name">Perdix 2</div>
-        <div class="device-status" id="sw-status">
-          <div class="status-dot" id="sw-dot"></div>
-          <span id="sw-status-text">Not connected</span>
-        </div>
-        <button class="bt-connect-btn" id="sw-connect-btn" onclick="connectShearwater()">
-          &#x1F535; Connect via Bluetooth
-        </button>
-        <div class="bt-progress" id="sw-progress">
-          <div class="progress-bar-wrap"><div class="progress-bar-fill" id="sw-bar"></div></div>
-          <div class="progress-text" id="sw-progress-text">Initialising...</div>
-        </div>
-        <div class="bt-log" id="sw-log"></div>
+    <div class="computer-picker" id="computer-picker">
+      <div class="computer-card" onclick="selectComputer('shearwater')">
+        <div class="computer-card-name">Shearwater</div>
+        <div class="computer-card-models">Perdix 2 &middot; Perdix &middot; Teric &middot; Peregrine</div>
       </div>
-
-      <details>
-        <summary>&#x25B8; How to prepare your Perdix 2</summary>
-        <div style="font-size:0.63rem;color:var(--text);opacity:0.7;line-height:1.7;margin-top:0.5rem;padding:0 0.2rem">
-          On the computer: press LEFT until <em>Bluetooth</em> is highlighted, then press RIGHT to select.<br>
-          Keep the Perdix within 30 cm of your laptop during download.<br>
-          &#x26A0;&#xFE0F; Chrome or Edge only &mdash; Web Bluetooth is not supported in Firefox or Safari.
-        </div>
-      </details>
-    </div>
-
-    <!-- Suunto passkey notice -->
-    <div class="bt-section" id="section-suunto">
-      <div class="suunto-notice">
-        <div class="notice-title">&#x26A0; Passkey pairing required</div>
-        <div class="notice-text">
-          The EON Steel and EON Core use BLE Secure Pairing with a numeric passkey shown on the dive computer screen. Web Bluetooth cannot initiate this passkey exchange &mdash; it is a browser-level security constraint, not a hardware limitation.
-        </div>
-        <div class="notice-steps">
-          <div class="notice-step"><span class="step-num">1</span>Export via USB using <strong>Suunto DM5</strong> (Win/Mac) or <strong>SuuntoLink</strong></div>
-          <div class="notice-step"><span class="step-num">2</span>In DM5: File &rarr; Export &rarr; choose <em>SML</em> or <em>UDDF</em></div>
-          <div class="notice-step"><span class="step-num">3</span>Drop the file into the importer below</div>
-        </div>
-      </div>
-      <div style="margin-top:0.9rem;font-size:0.63rem;color:var(--muted);line-height:1.7;padding:0 0.2rem">
-        Alternatively: <strong>Subsurface</strong> (free desktop app) handles passkey pairing on desktop and can export UDDF.
+      <div class="computer-card" onclick="selectComputer('suunto')">
+        <div class="computer-card-name">Suunto</div>
+        <div class="computer-card-models">EON Steel &middot; EON Core &middot; D5</div>
       </div>
     </div>
 
-    <!-- Bridge panel -->
-    <div class="bt-section" id="section-bridge">
-      <div style="font-size:0.65rem;color:var(--text);line-height:1.8;margin-bottom:1rem">
-        Run <code style="color:var(--accent);background:rgba(0,212,255,0.08);padding:0.1rem 0.4rem;border-radius:3px">python suunto_bridge.py --serve --user yourname</code>
-        on your laptop. The bridge handles the passkey pairing that browsers cannot do.
+    <div id="download-ui" style="display:none">
+      <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:1rem">
+        <button onclick="deselectComputer()" style="background:none;border:none;color:var(--muted);font-family:var(--mono);font-size:0.7rem;cursor:pointer;padding:0">&larr; back</button>
+        <div id="selected-computer-label" style="font-family:var(--display);font-size:1rem;font-weight:800;color:white"></div>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:0.4rem">
+          <div id="dl-status-dot" class="status-dot"></div>
+          <span id="dl-status-text" style="font-size:0.62rem;color:var(--muted)">Ready</span>
+        </div>
       </div>
-      <div class="field-group" style="margin-bottom:0.7rem">
-        <label class="field-label">Bridge URL</label>
-        <input class="field-input" id="bridge-url" value="http://127.0.0.1:8765" placeholder="http://127.0.0.1:8765">
-      </div>
-      <div class="field-group" style="margin-bottom:0.9rem">
-        <label class="field-label">BLE address (optional — blank to auto-scan)</label>
-        <input class="field-input" id="bridge-address" placeholder="AA:BB:CC:DD:EE:FF">
-      </div>
-      <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-bottom:0.8rem">
-        <button class="btn btn-primary" id="bridge-dl-btn" onclick="bridgeDownload()">&#x2193; Download via Bridge</button>
-        <button class="btn btn-ghost" onclick="bridgeCheck()">Check bridge</button>
-      </div>
-      <div id="bridge-progress-wrap" style="display:none;margin-bottom:0.6rem">
+      <div id="dl-prepare-hint" style="font-size:0.63rem;color:var(--muted);line-height:1.7;margin-bottom:1rem;padding:0.7rem;background:rgba(0,212,255,0.04);border:1px solid var(--border);border-radius:8px"></div>
+      <button class="bt-connect-btn" id="bridge-dl-btn" onclick="bridgeDownload()">&#x2B07; Download dives</button>
+      <div id="bridge-progress-wrap" style="display:none;margin-top:0.8rem">
         <div style="font-size:0.6rem;color:var(--muted);margin-bottom:0.3rem" id="bridge-status-text"></div>
         <div style="height:3px;background:var(--surface);border-radius:2px;overflow:hidden">
           <div id="bridge-progress-bar" style="height:100%;background:var(--accent);width:0%;transition:width 0.4s"></div>
         </div>
       </div>
-      <div id="bridge-log" style="font-size:0.6rem;font-family:var(--mono);color:var(--muted);max-height:120px;overflow-y:auto;line-height:1.7"></div>
-      <details style="margin-top:0.8rem">
-        <summary>&#x25B8; Install bridge (one-time)</summary>
-        <div style="font-size:0.6rem;color:var(--text);opacity:0.75;line-height:1.9;margin-top:0.6rem">
-          <strong>1. Install dctool</strong><br>
-          &nbsp;&nbsp;macOS: <code style="color:var(--accent)">brew install libdivecomputer</code><br>
-          &nbsp;&nbsp;Linux: <code style="color:var(--accent)">sudo apt install libdivecomputer-utils</code><br>
-          &nbsp;&nbsp;Windows: <a href="https://libdivecomputer.org/builds/stable/" style="color:var(--accent)" target="_blank">libdivecomputer.org/builds/stable</a><br><br>
-          <strong>2. Install Python deps</strong><br>
-          &nbsp;&nbsp;<code style="color:var(--accent)">pip install requests flask lxml</code><br><br>
-          <strong>3. Start bridge</strong><br>
-          &nbsp;&nbsp;<code style="color:var(--accent)">python suunto_bridge.py --serve --user kalle</code><br><br>
-          <strong>4. First pairing</strong><br>
-          &nbsp;&nbsp;EON Steel: Settings &rarr; Connectivity &rarr; Airplane Mode: Off<br>
-          &nbsp;&nbsp;Enter passkey from dive computer screen when OS dialog appears.
-        </div>
-      </details>
+      <div id="bridge-log" style="font-size:0.6rem;font-family:var(--mono);color:var(--muted);max-height:140px;overflow-y:auto;line-height:1.7;margin-top:0.5rem"></div>
     </div>
 
     <div class="import-divider">or import file</div>
@@ -818,200 +759,36 @@ function showBtHelp(reason) {
   box.innerHTML = html;
 }
 
-async function connectShearwater() {
-  // Clear any previous help
-  const helpBox = document.getElementById('bt-help-container');
-  if (helpBox) helpBox.innerHTML = '';
+// ─── Computer picker ─────────────────────────────────────────────────────────
 
-  if (!navigator.bluetooth) {
-    swLog('Web Bluetooth API not available.', 'log-err');
-    showBtHelp('no-api');
-    return;
-  }
+const COMPUTER_HINTS = {
+  shearwater: 'On your Perdix 2: press LEFT until <strong style="color:white">Bluetooth</strong> is highlighted, then press RIGHT to select. Keep the dive computer within 30 cm.',
+  suunto:     'On your EON Steel / Core: Settings &rarr; Connectivity &rarr; Airplane Mode: <strong style="color:white">Off</strong>. A passkey will appear on the dive computer screen &mdash; confirm it on your phone when prompted.',
+};
 
-  // Proactively check adapter availability before showing device picker
-  try {
-    const available = await navigator.bluetooth.getAvailability();
-    if (!available) {
-      swLog('Bluetooth adapter not found or disabled.', 'log-err');
-      swSetStatus('error', 'Bluetooth unavailable');
-      showBtHelp('no-adapter');
-      return;
-    }
-  } catch(e) {
-    // getAvailability not supported on older Chrome — proceed anyway
-  }
+let selectedComputer = null;
 
-  const btn = document.getElementById('sw-connect-btn');
-  btn.disabled = true;
-  swSetStatus('connecting', 'Scanning...');
-  swProgress(5, 'Requesting Bluetooth device...');
-  swLog('Requesting Bluetooth device...', 'log-info');
-
-  try {
-    bleDevice = await navigator.bluetooth.requestDevice({
-      filters: [
-        { namePrefix: 'Perdix'    },
-        { namePrefix: 'Teric'     },
-        { namePrefix: 'Petrel'    },
-        { namePrefix: 'Peregrine' },
-        { namePrefix: 'Tern'      },
-      ],
-      optionalServices: [SW_SERVICE]
-    });
-
-    swLog('Found: ' + bleDevice.name, 'log-ok');
-    swSetStatus('connecting', 'Connecting to ' + bleDevice.name + '...');
-    swProgress(15, 'Connecting to GATT server...');
-
-    bleDevice.addEventListener('gattserverdisconnected', onSwDisconnected);
-
-    const server = await bleDevice.gatt.connect();
-    swProgress(25, 'Discovering services...');
-    swLog('Connected to GATT server', 'log-ok');
-
-    const service = await server.getPrimaryService(SW_SERVICE);
-    swLog('Service found: ' + SW_SERVICE.slice(0, 8) + '...', 'log-ok');
-    swProgress(35, 'Getting characteristic...');
-
-    bleChar = await service.getCharacteristic(SW_CHAR);
-    swProgress(45, 'Enabling notifications...');
-
-    bleChar.addEventListener('characteristicvaluechanged', onSwNotify);
-    await bleChar.startNotifications();
-    swLog('Notifications enabled on ' + SW_CHAR.slice(0, 8) + '...', 'log-ok');
-    swProgress(55, 'Requesting firmware version...');
-    swSetStatus('connecting', 'Handshaking...');
-
-    // Send firmware version request (SLIP-encoded, bytes from libdivecomputer)
-    const vPkt = slipEncode(SW_REQ_VERSION);
-    await bleChar.writeValueWithoutResponse(vPkt);
-    swLog('TX version request (' + vPkt.length + 'B): ' + Array.from(vPkt).map(b => b.toString(16).padStart(2,'0')).join(' '), '');
-
-    const vResp = await waitForPacket(5000);
-    if (!vResp) throw new Error('Timeout waiting for firmware version response. Make sure the Perdix is in Bluetooth mode.');
-
-    swLog('RX (' + vResp.length + 'B): ' + Array.from(vResp).map(b => b.toString(16).padStart(2,'0')).join(' '), 'log-ok');
-    swProgress(65, 'Requesting dive list...');
-    swSetStatus('connecting', 'Downloading dive summaries...');
-
-    await downloadDiveList();
-
-  } catch (err) {
-    swSetStatus('error', 'Connection failed');
-    swLog('Error: ' + err.message, 'log-err');
-    swProgress(0, 'Failed - see below');
-    btn.disabled = false;
-
-    const msg = err.message.toLowerCase();
-    if (msg.includes('bluetooth adapter not found') || msg.includes('no bluetooth adapter')) {
-      showBtHelp('no-adapter');
-    } else if (msg.includes('permission') || msg.includes('denied') || msg.includes('not allowed')) {
-      showBtHelp('permission-denied');
-    } else if (msg.includes('user cancelled') || msg.includes('user denied') || msg.includes('chooser')) {
-      swLog('Device picker cancelled.', '');
-    } else {
-      toast('BT Error: ' + err.message, 'warn');
-    }
-  }
+function selectComputer(type) {
+  selectedComputer = type;
+  document.getElementById('computer-picker').style.display = 'none';
+  document.getElementById('download-ui').style.display = 'block';
+  document.getElementById('selected-computer-label').textContent =
+    type === 'shearwater' ? 'Shearwater' : 'Suunto';
+  document.getElementById('dl-prepare-hint').innerHTML = COMPUTER_HINTS[type] || '';
+  document.getElementById('bridge-log').innerHTML = '';
+  document.getElementById('bridge-progress-wrap').style.display = 'none';
+  document.getElementById('bridge-dl-btn').disabled = false;
+  document.getElementById('dl-status-dot').className = 'status-dot';
+  document.getElementById('dl-status-text').textContent = 'Ready';
 }
 
-async function downloadDiveList() {
-  const listPkt = slipEncode(SW_REQ_DIVELIST);
-  await bleChar.writeValueWithoutResponse(listPkt);
-  swLog('TX dive-list request (' + listPkt.length + 'B)', '');
-
-  const parsedDives = [];
-  const base = dives.length;
-  let seq = 0;
-
-  while (true) {
-    const pkt = await waitForPacket(4000);
-    if (!pkt || pkt.length < 4) {
-      swLog('End of list or timeout (received ' + parsedDives.length + ' dive summaries)', 'log-ok');
-      break;
-    }
-
-    // End-of-list sentinel: Shearwater sends short terminator packet
-    if (pkt.length <= 6) break;
-
-    // Shearwater response packet layout (reconstructed from libdivecomputer source):
-    // Byte  0    : 0x01 (device->host direction)
-    // Byte  1    : 0x00
-    // Byte  2    : 0xFF
-    // Byte  3    : response class
-    // Bytes 4-5  : sequence number
-    // Bytes 6-7  : payload length (big-endian)
-    // Bytes 8-9  : max depth (big-endian, units 0.01 m)
-    // Bytes 10-11: dive time (big-endian, seconds)
-    // Bytes 12-15: timestamp (big-endian, seconds since 2000-01-01T00:00:00Z)
-    const maxDepth  = ((pkt[8]  << 8) | pkt[9])  / 100;
-    const diveSecs  = (pkt[10] << 8) | pkt[11];
-    const tsRaw     = ((pkt[12] << 24) | (pkt[13] << 16) | (pkt[14] << 8) | pkt[15]) >>> 0;
-    const epoch2000 = 946684800;
-    const date      = new Date((tsRaw + epoch2000) * 1000).toISOString().slice(0, 19);
-
-    // Extended packets (≥18 bytes) include water temperature at bytes 16-17.
-    // Shearwater encodes temperature as (value / 10) - 273.15 from Kelvin×10, or
-    // as a signed int16 in tenths of a degree Celsius. We try both and pick whichever
-    // is in a plausible diving range (-5°C to 40°C).
-    let waterTemp = null;
-    if (pkt.length >= 18) {
-      const rawTemp = (pkt[16] << 8) | pkt[17];
-      const asKelvin10 = rawTemp / 10 - 273.15;   // Kelvin * 10 → °C
-      const asCelsius10 = rawTemp / 10;            // °C * 10 → °C
-      const asSignedC10 = ((rawTemp > 0x7FFF ? rawTemp - 0x10000 : rawTemp)) / 10;
-      if (asKelvin10 >= -5 && asKelvin10 <= 40) waterTemp = parseFloat(asKelvin10.toFixed(1));
-      else if (asCelsius10 >= -5 && asCelsius10 <= 40) waterTemp = parseFloat(asCelsius10.toFixed(1));
-      else if (asSignedC10 >= -5 && asSignedC10 <= 40) waterTemp = parseFloat(asSignedC10.toFixed(1));
-    }
-
-    parsedDives.push({
-      source: bleDevice ? bleDevice.name : 'Shearwater',
-      number: base + parsedDives.length + 1,
-      name: null,
-      date,
-      maxDepth,
-      duration: diveSecs,
-      profile: [],
-      profilePending: true,
-      minTemp: waterTemp,
-      avgTemp: waterTemp,
-      location: null,
-      rawPkt: Array.from(pkt).map(b => b.toString(16).padStart(2,'0')).join(' ')
-    });
-
-    seq++;
-    swProgress(70 + Math.min(25, seq), 'Received summary ' + seq + '...');
-    swLog('Dive ' + seq + ': ' + maxDepth.toFixed(1) + 'm, ' + Math.floor(diveSecs/60) + 'min, ' + date + (waterTemp != null ? ', temp=' + waterTemp + '°C' : ''), 'log-ok');
-  }
-
-  if (parsedDives.length === 0) {
-    swSetStatus('connected', 'Connected - raw mode');
-    swProgress(100, 'Connected (could not parse structured dives)');
-    swLog('No structured dive records parsed. The packet format may differ on this firmware. Raw packets logged above.', 'log-err');
-    toast('Connected but dive parsing needs tuning for this firmware version', 'warn');
-    document.getElementById('sw-connect-btn').disabled = false;
-    document.getElementById('sw-connect-btn').textContent = 'Retry Download';
-    return;
-  }
-
-  dives.push(...parsedDives);
-  swSetStatus('connected', 'Downloaded ' + parsedDives.length + ' dive' + (parsedDives.length !== 1 ? 's' : ''));
-  swProgress(100, parsedDives.length + ' dives downloaded');
-  renderList();
-  toast(parsedDives.length + ' dives from ' + (bleDevice ? bleDevice.name : 'Shearwater'), 'ok');
-  document.getElementById('sw-connect-btn').disabled = false;
-  document.getElementById('sw-connect-btn').textContent = 'Download Again';
+function deselectComputer() {
+  selectedComputer = null;
+  document.getElementById('download-ui').style.display = 'none';
+  document.getElementById('computer-picker').style.display = 'flex';
 }
 
-// ─── Tab Switching ────────────────────────────────────────────────────────────
-function switchTab(id, btn) {
-  document.querySelectorAll('.bt-tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.bt-section').forEach(s => s.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('section-' + id).classList.add('active');
-}
+function switchTab() {}   // no-op, kept for any stale references
 
 // ─── File Parsing ─────────────────────────────────────────────────────────────
 function buildDive(source, num, name, date, profile) {
@@ -1491,7 +1268,7 @@ async function bridgeDownload() {
 
   if (isAndroid()) {
     const username = cfg.username || window.AndroidBridge.getUsername() || 'anonymous';
-    window.AndroidBridge.startDownload(username, address);
+    window.AndroidBridge.startDownload(username, address, selectedComputer || 'shearwater');
     bridgeLog('⚡ EON Steel: watch screen for passkey, confirm when Android dialog appears.', '');
     _startBridgePoll();
     return;
