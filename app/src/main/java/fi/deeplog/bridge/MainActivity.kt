@@ -24,7 +24,7 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         val denied = results.filterValues { !it }.keys
-        if (denied.isEmpty()) startBridge()
+        if (denied.isEmpty()) requestBluetoothEnableAndStart()
         else Toast.makeText(this,
             "Bluetooth permissions required for dive computer download",
             Toast.LENGTH_LONG).show()
@@ -114,18 +114,17 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
 
-        // Only request Bluetooth enable if we already have permissions
-        // (requesting without permissions causes a crash on some devices)
-        if (needed.isEmpty()) {
-            val bt = getSystemService(BluetoothManager::class.java)?.adapter
-            if (bt != null && !bt.isEnabled) {
-                @Suppress("DEPRECATION")
-                startActivityForResult(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), 1)
-            }
-            startBridge()
-        } else {
-            permLauncher.launch(needed.toTypedArray())
+        if (needed.isEmpty()) requestBluetoothEnableAndStart()
+        else permLauncher.launch(needed.toTypedArray())
+    }
+
+    private fun requestBluetoothEnableAndStart() {
+        val bt = getSystemService(BluetoothManager::class.java)?.adapter
+        if (bt != null && !bt.isEnabled) {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), 1)
         }
+        startBridge()
     }
 
     private fun startBridge() {
