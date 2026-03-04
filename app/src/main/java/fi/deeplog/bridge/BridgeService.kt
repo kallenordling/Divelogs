@@ -1,12 +1,19 @@
 // BridgeService.kt
 //
 // Foreground service that:
-//   1. Runs NanoHTTPD on localhost:8765 — same API as suunto_bridge.py
-//   2. Handles BLE download for EON Steel (passkey via Android OS) and Perdix 2 (no passkey)
+//   1. Runs a minimal HTTP server on localhost:8765 — same API as suunto_bridge.py
+//   2. Handles BLE download for supported dive computers:
+//        • Suunto EON Steel / EON Core / D5 / G5   (HDLC over GATT)
+//        • Shearwater Perdix/Perdix 2/Teric/Peregrine/Tern/NERD/Petrel (SLIP over GATT)
+//        • Heinrichs-Weikamp OSTC (Telit & U-Blox Terminal-I/O flow-control)
+//        • Mares BlueLink Pro, Pelagic/Oceanic/Aqualung/Sherwood/Apeks,
+//          ScubaPro G2/G3, Divesoft, Cressi, Nordic UART generic —
+//          device detected + connected, dive-data parsing coming soon
 //   3. Pushes parsed dives directly to Supabase
 //
-// The web app (DeepLog in Chrome) talks to this via http://localhost:8765
-// exactly the same way it talks to the Python bridge — no web app changes needed.
+// BLE UUID knowledge derived from Subsurface open-source project (GPLv2+):
+//   https://github.com/subsurface/subsurface/blob/master/core/qt-ble.cpp
+//   https://github.com/subsurface/subsurface/blob/master/core/btdiscovery.cpp
 
 package fi.deeplog.bridge
 
@@ -43,12 +50,55 @@ private const val SUPABASE_KEY =
     ".wXLAcj5NeyVnO2nTB5ZzNWwe_hFtPkZYHBKkMT2FmAo"
 
 // ── BLE UUIDs ─────────────────────────────────────────────────────────────────
+// Suunto (EON Steel, EON Core, D5, G5)
 private val EON_SERVICE  = UUID.fromString("98ae7120-e62e-11e3-badd-0002a5d5c51b")
 private val EON_TX       = UUID.fromString("0000fefb-0000-1000-8000-00805f9b34fb")
 private val EON_RX       = UUID.fromString("00000002-0000-1000-8000-00805f9b34fb")
+
+// Shearwater (Perdix, Perdix 2, Teric, Peregrine, Tern, NERD, Petrel)
 private val SW_SERVICE   = UUID.fromString("fe25c237-0ece-443c-b0aa-e02033e7029d")
 private val SW_CHAR      = UUID.fromString("27b7570b-359e-45a3-91bb-cf7e70049bd2")
-private val CCCD         = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+// Heinrichs-Weikamp OSTC — Telit/Stollmann Terminal I/O
+private val HW_TELIT_SERVICE     = UUID.fromString("0000fefb-0000-1000-8000-00805f9b34fb")
+private val HW_TELIT_DATA_RX     = UUID.fromString("00000001-0000-1000-8000-008025000000") // write commands
+private val HW_TELIT_DATA_TX     = UUID.fromString("00000002-0000-1000-8000-008025000000") // subscribe notify
+private val HW_TELIT_CREDITS_RX  = UUID.fromString("00000003-0000-1000-8000-008025000000") // write credits
+private val HW_TELIT_CREDITS_TX  = UUID.fromString("00000004-0000-1000-8000-008025000000") // subscribe indicate
+
+// Heinrichs-Weikamp OSTC — U-Blox Terminal I/O
+private val HW_UBLOX_SERVICE     = UUID.fromString("2456e1b9-26e2-8f83-e744-f34f01e9d701")
+private val HW_UBLOX_DATA        = UUID.fromString("2456e1b9-26e2-8f83-e744-f34f01e9d703")
+private val HW_UBLOX_CREDITS     = UUID.fromString("2456e1b9-26e2-8f83-e744-f34f01e9d704")
+
+// Mares BlueLink Pro
+private val MARES_SERVICE        = UUID.fromString("544e326b-5b72-c6b0-1c46-41c1bc448118")
+
+// Pelagic (Oceanic/Aqualung/Sherwood/Apeks) — two service variant groups
+private val PELAGIC_A_SERVICE    = UUID.fromString("cb3c4555-d670-4670-bc20-b61dbc851e9a") // i770R, i200C, Pro Plus X, Geo 4.0
+private val PELAGIC_B_SERVICE    = UUID.fromString("ca7b0001-f785-4c38-b599-c7c5fbadb034") // i330R, DSX
+
+// ScubaPro G2 / G3
+private val SCUBAPRO_SERVICE     = UUID.fromString("fdcdeaaa-295d-470e-bf15-04217b7aa0a0")
+
+// Divesoft
+private val DIVESOFT_SERVICE     = UUID.fromString("0000fcef-0000-1000-8000-00805f9b34fb")
+
+// Cressi (higher priority than Nordic UART — intentional, UUIDs differ only in last bytes)
+private val CRESSI_SERVICE       = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dc10b8")
+
+// Nordic UART Service — generic, used by some Ratio, Tecdiving, McLean etc.
+private val NORDIC_UART_SERVICE  = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
+
+// Halcyon Symbios
+private val HALCYON_SERVICE      = UUID.fromString("00000001-8c3b-4f2c-a59e-8c08224f3253")
+
+// Standard GATT Client Characteristic Configuration Descriptor
+private val CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+// ── HW Terminal I/O flow-control constants ────────────────────────────────────
+private const val HW_MAXIMAL_CREDIT = 254
+private const val HW_MINIMAL_CREDIT  = 32
 
 // ── SLIP ──────────────────────────────────────────────────────────────────────
 private const val SLIP_END      = 0xC0.toByte()
@@ -59,6 +109,28 @@ private const val SLIP_ESC_ESC  = 0xDD.toByte()
 // ── HDLC ──────────────────────────────────────────────────────────────────────
 private const val HDLC_FLAG     = 0x7E.toByte()
 private const val HDLC_ESC      = 0x7D.toByte()
+
+// ── Detected dive computer type ───────────────────────────────────────────────
+enum class DiveComputerType {
+    SUUNTO_EON,       // Suunto EON Steel / Core / D5 / G5
+    SHEARWATER,       // Shearwater Perdix / Teric / Peregrine / Tern / NERD / Petrel
+    HW_OSTC_TELIT,    // Heinrichs-Weikamp OSTC via Telit Terminal I/O
+    HW_OSTC_UBLOX,    // Heinrichs-Weikamp OSTC via U-Blox Terminal I/O
+    MARES,            // Mares BlueLink Pro — detected, parsing coming soon
+    PELAGIC_A,        // Oceanic / Aqualung / Sherwood / Apeks group A — detected
+    PELAGIC_B,        // Oceanic / Aqualung / Sherwood / Apeks group B — detected
+    SCUBAPRO,         // ScubaPro G2 / G3 — detected
+    DIVESOFT,         // Divesoft — detected
+    CRESSI,           // Cressi — detected
+    GENERIC_UART,     // Nordic UART / other generic — detected
+    UNKNOWN
+}
+
+data class FoundDevice(
+    val device: BluetoothDevice,
+    val type:   DiveComputerType,
+    val advertisedServiceUuid: UUID? = null
+)
 
 // ── State shared between BLE coroutine and HTTP server ────────────────────────
 data class BridgeState(
@@ -147,11 +219,11 @@ class BridgeService : Service() {
         }
 
         try {
-            // ── Scan for target device ────────────────────────────────────────
             setState(state.get().copy(status = "scanning", message = "Scanning for dive computers…", progress = 10))
 
-            val device = if (targetAddress != null) {
-                adapter.getRemoteDevice(targetAddress)
+            val found: FoundDevice = if (targetAddress != null) {
+                val device = adapter.getRemoteDevice(targetAddress)
+                FoundDevice(device, detectDeviceTypeByName(device.name ?: ""))
             } else {
                 scanForDevice(adapter) ?: run {
                     setState(BridgeState(
@@ -162,25 +234,39 @@ class BridgeService : Service() {
                 }
             }
 
-            val isEon = isEonSteelDevice(device)
+            val deviceLabel = found.device.name ?: found.device.address
             setState(state.get().copy(
-                status  = "downloading",
-                message = "Connecting to ${device.name ?: device.address}…",
+                status   = "downloading",
+                message  = "Connecting to $deviceLabel…",
                 progress = 20
             ))
 
-            // ── Download dives ────────────────────────────────────────────────
-            val dives = if (isEon) downloadEon(device) else downloadShearwater(device)
+            Log.i(TAG, "Device: $deviceLabel  type=${found.type}")
+
+            val dives: List<DiveSummary> = when (found.type) {
+                DiveComputerType.SUUNTO_EON    -> downloadEon(found.device)
+                DiveComputerType.SHEARWATER    -> downloadShearwater(found.device)
+                DiveComputerType.HW_OSTC_TELIT -> downloadHwOstcTelit(found.device)
+                DiveComputerType.HW_OSTC_UBLOX -> downloadHwOstcUblox(found.device)
+                else -> {
+                    val brand = found.type.toBrandName()
+                    setState(BridgeState(
+                        status    = "error",
+                        lastError = "Device found: $deviceLabel ($brand). " +
+                                    "Dive data download for this brand is not yet implemented."
+                    ))
+                    return
+                }
+            }
 
             if (dives.isEmpty()) {
                 setState(BridgeState(status = "error", lastError = "No dives found on device"))
                 return
             }
 
-            // ── Upload to Supabase ────────────────────────────────────────────
             setState(state.get().copy(
-                status  = "uploading",
-                message = "Uploading ${dives.size} dives…",
+                status   = "uploading",
+                message  = "Uploading ${dives.size} dives…",
                 progress = 80
             ))
 
@@ -212,56 +298,116 @@ class BridgeService : Service() {
     }
 
     // ── BLE scanning ──────────────────────────────────────────────────────────
+    //
+    // Scans for all known dive computer BLE service UUIDs.
+    // Returns FoundDevice with the device type detected from advertised service UUIDs.
 
     @SuppressLint("MissingPermission")
-    private suspend fun scanForDevice(adapter: BluetoothAdapter): BluetoothDevice? {
-        val result   = CompletableDeferred<BluetoothDevice?>()
-        val scanner  = adapter.bluetoothLeScanner ?: return null
-        val filters  = listOf(
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(EON_SERVICE)).build(),
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(SW_SERVICE)).build(),
+    private suspend fun scanForDevice(adapter: BluetoothAdapter): FoundDevice? {
+        data class ScanHit(val device: BluetoothDevice, val serviceUuid: UUID)
+        val result  = CompletableDeferred<ScanHit?>()
+        val scanner = adapter.bluetoothLeScanner ?: return null
+
+        // All known dive computer BLE service UUIDs — order matches Subsurface priority
+        val knownServiceUuids = listOf(
+            HW_TELIT_SERVICE,
+            HW_UBLOX_SERVICE,
+            MARES_SERVICE,
+            EON_SERVICE,
+            PELAGIC_A_SERVICE,
+            PELAGIC_B_SERVICE,
+            SCUBAPRO_SERVICE,
+            SW_SERVICE,
+            DIVESOFT_SERVICE,
+            CRESSI_SERVICE,       // must come before NORDIC_UART
+            NORDIC_UART_SERVICE,
+            HALCYON_SERVICE,
         )
+
+        val filters = knownServiceUuids.map { uuid ->
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(uuid)).build()
+        }
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, r: ScanResult) {
+                if (result.isCompleted) return
+                // Determine which of our known UUIDs the device is advertising
+                val advUuids = r.scanRecord?.serviceUuids?.map { it.uuid } ?: emptyList()
+                val matchedUuid = knownServiceUuids.firstOrNull { it in advUuids }
+                    ?: knownServiceUuids.firstOrNull() // fallback if service filter matched but not in adv data
                 scanner.stopScan(this)
-                result.complete(r.device)
+                result.complete(ScanHit(r.device, matchedUuid ?: EON_SERVICE))
             }
-            override fun onScanFailed(errorCode: Int) {
-                result.complete(null)
-            }
+            override fun onScanFailed(errorCode: Int) { result.complete(null) }
         }
 
         scanner.startScan(filters, settings, callback)
-        // Timeout after 15 seconds
-        withTimeoutOrNull(15_000) { result.await() }.also {
+        val hit = withTimeoutOrNull(15_000) { result.await() }.also {
             runCatching { scanner.stopScan(callback) }
         }
-        return result.await()
+        // If timeout occurred, await the already-set result
+        val scanHit = if (result.isCompleted) result.await() else null
+
+        scanHit ?: return null
+        val type = detectDeviceTypeByServiceUuid(scanHit.serviceUuid)
+            .takeIf { it != DiveComputerType.UNKNOWN }
+            ?: detectDeviceTypeByName(scanHit.device.name ?: "")
+        return FoundDevice(scanHit.device, type, scanHit.serviceUuid)
     }
 
-    @SuppressLint("MissingPermission")
-    private fun isEonSteelDevice(device: BluetoothDevice): Boolean {
-        val name = device.name?.lowercase() ?: ""
-        return name.contains("eon") || name.contains("suunto") ||
-               device.uuids?.any { it.uuid == EON_SERVICE } == true
+    // ── Device type detection ─────────────────────────────────────────────────
+
+    private fun detectDeviceTypeByServiceUuid(uuid: UUID): DiveComputerType = when (uuid) {
+        HW_TELIT_SERVICE    -> DiveComputerType.HW_OSTC_TELIT
+        HW_UBLOX_SERVICE    -> DiveComputerType.HW_OSTC_UBLOX
+        EON_SERVICE         -> DiveComputerType.SUUNTO_EON
+        SW_SERVICE          -> DiveComputerType.SHEARWATER
+        MARES_SERVICE       -> DiveComputerType.MARES
+        PELAGIC_A_SERVICE   -> DiveComputerType.PELAGIC_A
+        PELAGIC_B_SERVICE   -> DiveComputerType.PELAGIC_B
+        SCUBAPRO_SERVICE    -> DiveComputerType.SCUBAPRO
+        DIVESOFT_SERVICE    -> DiveComputerType.DIVESOFT
+        CRESSI_SERVICE      -> DiveComputerType.CRESSI
+        NORDIC_UART_SERVICE -> DiveComputerType.GENERIC_UART
+        HALCYON_SERVICE     -> DiveComputerType.UNKNOWN
+        else                -> DiveComputerType.UNKNOWN
     }
 
-    // ── EON Steel download ────────────────────────────────────────────────────
+    private fun detectDeviceTypeByName(name: String): DiveComputerType {
+        val n = name.lowercase()
+        return when {
+            // Heinrichs-Weikamp OSTC — name starts with "OSTC"
+            n.startsWith("ostc") -> DiveComputerType.HW_OSTC_TELIT
+            // Suunto
+            n.contains("eon") || n.contains("suunto") || n.startsWith("d5") -> DiveComputerType.SUUNTO_EON
+            // Shearwater — all model names
+            n.startsWith("perdix") || n.startsWith("teric") || n.startsWith("peregrine") ||
+            n.startsWith("tern")   || n.startsWith("nerd")  || n.startsWith("petrel") ||
+            n.startsWith("predator") -> DiveComputerType.SHEARWATER
+            // ScubaPro
+            n.startsWith("g2") || n.startsWith("g3") || n.contains("aladin") || n.contains("luna") -> DiveComputerType.SCUBAPRO
+            // Mares
+            n.contains("mares") || n.contains("sirius") || n.contains("genius") -> DiveComputerType.MARES
+            // Cressi
+            n.startsWith("caresio") || n.startsWith("goa_") || n.startsWith("neon_") || n.startsWith("nepto_") -> DiveComputerType.CRESSI
+            else -> DiveComputerType.UNKNOWN
+        }
+    }
+
+    // ── EON Steel / EON Core / Suunto D5 download (HDLC over BLE) ────────────
     //
-    // Android handles the BLE Secure Pairing passkey dialog automatically
-    // when we call device.connectGatt(). The user sees the system dialog,
-    // types the passkey shown on the EON Steel, and the connection proceeds.
-    // No special code needed here — this is the key advantage over Web BT.
+    // Android handles BLE Secure Pairing passkey dialog automatically when
+    // connectGatt() is called. The user sees the system dialog, types the
+    // passkey shown on the dive computer, and the connection proceeds.
 
     @SuppressLint("MissingPermission")
     private suspend fun downloadEon(device: BluetoothDevice): List<DiveSummary> {
-        val packets = mutableListOf<ByteArray>()
+        val packets  = mutableListOf<ByteArray>()
         val rxBuffer = mutableListOf<Byte>()
-        val done = CompletableDeferred<Unit>()
+        val done     = CompletableDeferred<Unit>()
 
         setState(state.get().copy(message = "Waiting for passkey pairing…", progress = 25))
 
@@ -284,7 +430,6 @@ class BridgeService : Service() {
                 }
                 txChar = svc.getCharacteristic(EON_TX)
                 val rxChar = svc.getCharacteristic(EON_RX)
-
                 gatt.setCharacteristicNotification(rxChar, true)
                 val desc = rxChar.getDescriptor(CCCD)
                 desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
@@ -293,12 +438,8 @@ class BridgeService : Service() {
 
             override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
                 setState(state.get().copy(message = "Requesting dive list…", progress = 45))
-                // Send "get directory" command (HDLC-framed)
                 val cmd = hdlcEncode(byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x00, 0x10))
-                txChar?.let {
-                    it.value = cmd
-                    gatt.writeCharacteristic(it)
-                }
+                txChar?.let { it.value = cmd; gatt.writeCharacteristic(it) }
             }
 
             @Deprecated("Required for API < 33")
@@ -309,13 +450,10 @@ class BridgeService : Service() {
                     message  = "Receiving… (${packets.size} packets)",
                     progress = 50 + minOf(25, packets.size)
                 ))
-                // Disconnect after 3s of silence handled by timeout below
             }
         }
 
         val gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-
-        // Wait up to 60s for the connection + passkey + data
         withTimeoutOrNull(60_000) { done.await() }
         gatt.close()
 
@@ -323,7 +461,7 @@ class BridgeService : Service() {
         return parseEonPackets(packets, device.name ?: "Suunto EON")
     }
 
-    // ── Shearwater download ───────────────────────────────────────────────────
+    // ── Shearwater download (SLIP over BLE) ───────────────────────────────────
 
     @SuppressLint("MissingPermission")
     private suspend fun downloadShearwater(device: BluetoothDevice): List<DiveSummary> {
@@ -375,6 +513,210 @@ class BridgeService : Service() {
         gatt.close()
 
         return parseShearwaterPackets(packets, device.name ?: "Shearwater")
+    }
+
+    // ── Heinrichs-Weikamp OSTC download — Telit/Stollmann Terminal I/O ────────
+    //
+    // The OSTC uses a credit-based flow-control protocol on top of BLE GATT:
+    //   • DATA_TX  (notify)  — raw bytes from device to phone
+    //   • DATA_RX  (write)   — raw bytes from phone to device
+    //   • CREDITS_TX (indicate) — device tells us how many credits it has consumed
+    //   • CREDITS_RX (write)    — we top up the device's receive budget
+    //
+    // Initial credit grant = 254; when device has consumed ≥222, we top up again.
+    // This matches the Subsurface BLEObject::setupHwTerminalIo() implementation.
+    //
+    // NOTE: The higher-level OSTC binary dive-log format requires libdivecomputer
+    //       to parse. Raw bytes are collected here; parsing is a future TODO.
+
+    @SuppressLint("MissingPermission")
+    private suspend fun downloadHwOstcTelit(device: BluetoothDevice): List<DiveSummary> {
+        val rawBytes  = mutableListOf<Byte>()
+        val done      = CompletableDeferred<Unit>()
+        var hwCredits = HW_MAXIMAL_CREDIT
+        var dataRxChar:    BluetoothGattCharacteristic? = null
+        var creditsRxChar: BluetoothGattCharacteristic? = null
+        var setupStep = 0 // 0=subscribe credits_tx, 1=subscribe data_tx, 2=grant credits
+
+        setState(state.get().copy(message = "Connecting to OSTC…", progress = 25))
+
+        val gattCallback = object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    setState(state.get().copy(message = "Connected — discovering services…", progress = 35))
+                    gatt.discoverServices()
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    done.complete(Unit)
+                }
+            }
+
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                val svc = gatt.getService(HW_TELIT_SERVICE) ?: run {
+                    done.completeExceptionally(Exception("HW Telit service not found"))
+                    return
+                }
+                dataRxChar    = svc.getCharacteristic(HW_TELIT_DATA_RX)
+                creditsRxChar = svc.getCharacteristic(HW_TELIT_CREDITS_RX)
+
+                // Step 0: subscribe to CREDITS_TX with INDICATE
+                val creditsTxChar = svc.getCharacteristic(HW_TELIT_CREDITS_TX)
+                gatt.setCharacteristicNotification(creditsTxChar, true)
+                val desc = creditsTxChar.getDescriptor(CCCD)
+                desc.value = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                setupStep = 0
+                gatt.writeDescriptor(desc)
+            }
+
+            override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+                when (setupStep) {
+                    0 -> {
+                        // Step 1: subscribe to DATA_TX with NOTIFY
+                        val svc = gatt.getService(HW_TELIT_SERVICE) ?: return
+                        val dataTxChar = svc.getCharacteristic(HW_TELIT_DATA_TX)
+                        gatt.setCharacteristicNotification(dataTxChar, true)
+                        val desc = dataTxChar.getDescriptor(CCCD)
+                        desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        setupStep = 1
+                        gatt.writeDescriptor(desc)
+                    }
+                    1 -> {
+                        // Step 2: grant initial credits
+                        setState(state.get().copy(message = "Terminal I/O ready — granting credits…", progress = 45))
+                        creditsRxChar?.let { char ->
+                            char.value = byteArrayOf(HW_MAXIMAL_CREDIT.toByte())
+                            gatt.writeCharacteristic(char)
+                        }
+                        setupStep = 2
+                    }
+                }
+            }
+
+            // DATA_TX notifications — accumulate raw bytes
+            @Deprecated("Required for API < 33")
+            override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+                when (characteristic.uuid) {
+                    HW_TELIT_DATA_TX -> {
+                        rawBytes.addAll(characteristic.value.toList())
+                        hwCredits -= characteristic.value.size
+                        setState(state.get().copy(
+                            message  = "Receiving OSTC data… (${rawBytes.size} bytes)",
+                            progress = 50 + minOf(25, rawBytes.size / 100)
+                        ))
+                        // Top up credits when running low
+                        if (hwCredits <= HW_MINIMAL_CREDIT) {
+                            val topUp = (HW_MAXIMAL_CREDIT - hwCredits).coerceAtMost(255)
+                            hwCredits += topUp
+                            creditsRxChar?.let { char ->
+                                char.value = byteArrayOf(topUp.toByte())
+                                gatt.writeCharacteristic(char)
+                            }
+                        }
+                    }
+                    HW_TELIT_CREDITS_TX -> {
+                        // Device confirming credit consumption — no action needed
+                        Log.d(TAG, "OSTC credits_tx indicate: ${characteristic.value.toList()}")
+                    }
+                }
+            }
+        }
+
+        val gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        withTimeoutOrNull(60_000) { done.await() }
+        gatt.close()
+
+        Log.i(TAG, "OSTC: received ${rawBytes.size} raw bytes")
+        // The OSTC binary dive-log format requires libdivecomputer to decode.
+        // For now, return an informative error so the user knows we connected.
+        if (rawBytes.isEmpty()) throw Exception("OSTC connected but no data received")
+        throw Exception(
+            "OSTC connected and received ${rawBytes.size} bytes. " +
+            "Full dive parsing for Heinrichs-Weikamp OSTC requires libdivecomputer — coming soon."
+        )
+    }
+
+    // ── HW OSTC U-Blox variant ────────────────────────────────────────────────
+
+    @SuppressLint("MissingPermission")
+    private suspend fun downloadHwOstcUblox(device: BluetoothDevice): List<DiveSummary> {
+        val rawBytes  = mutableListOf<Byte>()
+        val done      = CompletableDeferred<Unit>()
+        var hwCredits = HW_MAXIMAL_CREDIT
+        var creditsChar: BluetoothGattCharacteristic? = null
+        var setupStep = 0
+
+        setState(state.get().copy(message = "Connecting to OSTC (U-Blox)…", progress = 25))
+
+        val gattCallback = object : BluetoothGattCallback() {
+            override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) gatt.discoverServices()
+                else if (newState == BluetoothProfile.STATE_DISCONNECTED) done.complete(Unit)
+            }
+
+            override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+                val svc = gatt.getService(HW_UBLOX_SERVICE) ?: run {
+                    done.completeExceptionally(Exception("HW U-Blox service not found"))
+                    return
+                }
+                creditsChar = svc.getCharacteristic(HW_UBLOX_CREDITS)
+                val dataChar = svc.getCharacteristic(HW_UBLOX_DATA)
+
+                // U-Blox: subscribe DATA with NOTIFY (CREDITS uses INDICATE in Telit, NOTIFY in U-Blox)
+                gatt.setCharacteristicNotification(dataChar, true)
+                val desc = dataChar.getDescriptor(CCCD)
+                desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                setupStep = 0
+                gatt.writeDescriptor(desc)
+            }
+
+            override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+                when (setupStep) {
+                    0 -> {
+                        // Subscribe CREDITS with INDICATE
+                        val svc = gatt.getService(HW_UBLOX_SERVICE) ?: return
+                        val credChar = svc.getCharacteristic(HW_UBLOX_CREDITS)
+                        gatt.setCharacteristicNotification(credChar, true)
+                        val desc = credChar.getDescriptor(CCCD)
+                        desc.value = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                        setupStep = 1
+                        gatt.writeDescriptor(desc)
+                    }
+                    1 -> {
+                        // Grant initial credits
+                        creditsChar?.let { char ->
+                            char.value = byteArrayOf(HW_MAXIMAL_CREDIT.toByte())
+                            gatt.writeCharacteristic(char)
+                        }
+                        setupStep = 2
+                    }
+                }
+            }
+
+            @Deprecated("Required for API < 33")
+            override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+                if (characteristic.uuid == HW_UBLOX_DATA) {
+                    rawBytes.addAll(characteristic.value.toList())
+                    hwCredits -= characteristic.value.size
+                    if (hwCredits <= HW_MINIMAL_CREDIT) {
+                        val topUp = (HW_MAXIMAL_CREDIT - hwCredits).coerceAtMost(255)
+                        hwCredits += topUp
+                        creditsChar?.let { char ->
+                            char.value = byteArrayOf(topUp.toByte())
+                            gatt.writeCharacteristic(char)
+                        }
+                    }
+                }
+            }
+        }
+
+        val gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        withTimeoutOrNull(60_000) { done.await() }
+        gatt.close()
+
+        if (rawBytes.isEmpty()) throw Exception("OSTC U-Blox connected but no data received")
+        throw Exception(
+            "OSTC U-Blox connected and received ${rawBytes.size} bytes. " +
+            "Full dive parsing requires libdivecomputer — coming soon."
+        )
     }
 
     // ── SLIP ──────────────────────────────────────────────────────────────────
@@ -454,7 +796,7 @@ class BridgeService : Service() {
                            (pkt[15].toLong()  and 0xFF)
             if (depth < 0.5 || duration < 30) continue
 
-            val epoch2000 = 946684800L // 2000-01-01 UTC in Unix seconds
+            val epoch2000 = 946684800L
             val ts = (epoch2000 + tsOffset) * 1000L
             val divedAt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
                 .apply { timeZone = TimeZone.getTimeZone("UTC") }
@@ -569,9 +911,25 @@ class BridgeService : Service() {
     }
 
     private fun updateNotification(text: String) {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(NOTIF_ID, buildNotification(text))
+        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(text))
     }
+}
+
+// ── DiveComputerType helper ───────────────────────────────────────────────────
+
+fun DiveComputerType.toBrandName(): String = when (this) {
+    DiveComputerType.SUUNTO_EON    -> "Suunto"
+    DiveComputerType.SHEARWATER    -> "Shearwater"
+    DiveComputerType.HW_OSTC_TELIT -> "Heinrichs-Weikamp OSTC (Telit)"
+    DiveComputerType.HW_OSTC_UBLOX -> "Heinrichs-Weikamp OSTC (U-Blox)"
+    DiveComputerType.MARES         -> "Mares"
+    DiveComputerType.PELAGIC_A,
+    DiveComputerType.PELAGIC_B     -> "Oceanic/Aqualung/Sherwood/Apeks"
+    DiveComputerType.SCUBAPRO      -> "ScubaPro"
+    DiveComputerType.DIVESOFT      -> "Divesoft"
+    DiveComputerType.CRESSI        -> "Cressi"
+    DiveComputerType.GENERIC_UART  -> "Generic (Nordic UART)"
+    DiveComputerType.UNKNOWN       -> "Unknown"
 }
 
 // ── Data class ────────────────────────────────────────────────────────────────
@@ -595,11 +953,7 @@ data class DiveSummary(
     )
 }
 
-// ── Minimal HTTP server (stdlib only, no dependencies) ───────────────────────
-//
-// Plain Java ServerSocket — no third-party library needed.
-// Handles GET /health, GET /status, POST /download, POST /reset
-// with CORS headers so the WebView JS bridge also works as HTTP fallback.
+// ── Minimal HTTP server ───────────────────────────────────────────────────────
 
 class BridgeHttpServer(private val port: Int, private val svc: BridgeService) {
 
@@ -636,39 +990,28 @@ class BridgeHttpServer(private val port: Int, private val svc: BridgeService) {
                     val reader = BufferedReader(InputStreamReader(it.getInputStream()))
                     val writer = PrintWriter(it.getOutputStream(), true)
 
-                    // Read request line + headers
                     val requestLine = reader.readLine() ?: return@use
                     val parts  = requestLine.split(" ")
                     if (parts.size < 2) return@use
                     val method = parts[0]
                     val path   = parts[1].split("?")[0]
 
-                    // Read headers
-                    val headers = mutableMapOf<String, String>()
                     var contentLength = 0
                     while (true) {
                         val line = reader.readLine() ?: break
                         if (line.isEmpty()) break
                         val colon = line.indexOf(':')
-                        if (colon > 0) {
-                            val k = line.substring(0, colon).trim().lowercase()
-                            val v = line.substring(colon + 1).trim()
-                            headers[k] = v
-                            if (k == "content-length") contentLength = v.toIntOrNull() ?: 0
-                        }
+                        if (colon > 0 && line.substring(0, colon).trim().lowercase() == "content-length")
+                            contentLength = line.substring(colon + 1).trim().toIntOrNull() ?: 0
                     }
 
-                    // Read body
                     val body = if (contentLength > 0) {
                         val buf = CharArray(contentLength)
                         reader.read(buf, 0, contentLength)
                         String(buf)
                     } else ""
 
-                    // Route
                     val (status, json) = route(method, path, body)
-
-                    // Write response
                     val bytes = json.toByteArray(Charsets.UTF_8)
                     writer.print("HTTP/1.1 $status\r\n")
                     writer.print("Content-Type: application/json\r\n")
@@ -688,7 +1031,6 @@ class BridgeHttpServer(private val port: Int, private val svc: BridgeService) {
 
     private fun route(method: String, path: String, body: String): Pair<String, String> {
         if (method == "OPTIONS") return "204 No Content" to ""
-
         return when {
             path == "/health" && method == "GET" ->
                 "200 OK" to """{"ok":true,"dctool":"android-native","version":"1.0.0"}"""
