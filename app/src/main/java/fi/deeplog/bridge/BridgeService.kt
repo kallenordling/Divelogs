@@ -653,7 +653,7 @@ class BridgeService : Service() {
             val ENTRY_SIZE   = 32
             val manifestAddr = 0xE0000000L
             val manifestSize = 0x600   // 1536 bytes = 48 × 32-byte entries
-            setState(state.get().copy(message = "Downloading dive list ($numDives entries)…", progress = 50))
+            setState(state.get().copy(message = "Downloading dive manifest…", progress = 50))
 
             fun Int.b3() = byteArrayOf(((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
             fun Long.b4() = byteArrayOf(((this shr 24) and 0xFF).toByte(), ((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
