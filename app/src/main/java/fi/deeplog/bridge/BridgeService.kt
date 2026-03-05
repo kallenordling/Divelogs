@@ -638,22 +638,26 @@ class BridgeService : Service() {
 
             var manifestAddr = 0xE0000000L
             var numDives     = 64
-            if (logPayload != null && logPayload.size >= 8 && logPayload[0] == 0x62.toByte()) {
-                // Response: [0x62, 0x80, 0x21, format, addr×4, ndives×2, ...]
-                if (logPayload.size >= 9) {
-                    manifestAddr = ((logPayload[3].toLong() and 0xFF) shl 24) or
-                                   ((logPayload[4].toLong() and 0xFF) shl 16) or
-                                   ((logPayload[5].toLong() and 0xFF) shl 8)  or
-                                   (logPayload[6].toLong() and 0xFF)
-                }
-                if (logPayload.size >= 11)
-                    numDives = ((logPayload[7].toInt() and 0xFF) shl 8) or (logPayload[8].toInt() and 0xFF)
+            var entrySize    = 128
+            if (logPayload != null && logPayload.size >= 12 && logPayload[0] == 0x62.toByte()) {
+                // Response: [0x62, 0x80, 0x21, nlogbooks, addr×4_BE, ndives×2_BE, entrySize×2_BE, ...]
+                //  [3]      = nlogbooks (skip)
+                //  [4..7]   = manifest address
+                //  [8..9]   = number of dives
+                //  [10..11] = bytes per entry
+                manifestAddr = ((logPayload[4].toLong() and 0xFF) shl 24) or
+                               ((logPayload[5].toLong() and 0xFF) shl 16) or
+                               ((logPayload[6].toLong() and 0xFF) shl 8)  or
+                               (logPayload[7].toLong() and 0xFF)
+                numDives  = ((logPayload[8].toInt()  and 0xFF) shl 8) or (logPayload[9].toInt()  and 0xFF)
+                entrySize = ((logPayload[10].toInt() and 0xFF) shl 8) or (logPayload[11].toInt() and 0xFF)
             }
-            numDives = numDives.coerceIn(1, 256)
-            Log.i(TAG, "SW manifest: addr=0x${manifestAddr.toString(16)} numDives=$numDives")
+            numDives  = numDives.coerceIn(1, 256)
+            entrySize = entrySize.coerceIn(32, 512)
+            Log.i(TAG, "SW manifest: addr=0x${manifestAddr.toString(16)} numDives=$numDives entrySize=$entrySize")
 
-            // ── 3. Download manifest (32 bytes per dive entry) ────────────────
-            val ENTRY_SIZE   = 32
+            // ── 3. Download manifest ──────────────────────────────────────────
+            val ENTRY_SIZE   = entrySize
             val manifestSize = numDives * ENTRY_SIZE
             setState(state.get().copy(message = "Downloading dive list ($numDives entries)…", progress = 50))
 
