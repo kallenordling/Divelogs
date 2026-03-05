@@ -520,6 +520,14 @@
           <div class="computer-card-name">Heinrichs-Weikamp</div>
           <div class="computer-card-models">OSTC 4 &middot; OSTC 5 &middot; OSTC 2N &middot; OSTC Plus &middot; OSTC Sport</div>
         </div>
+        <span class="computer-card-badge badge-ready">Ready</span>
+      </div>
+
+      <div class="computer-card" onclick="selectComputer('cressi')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Cressi</div>
+          <div class="computer-card-models">Cartesio &middot; Donatello &middot; Neon &middot; Nepto &middot; Goa</div>
+        </div>
         <span class="computer-card-badge badge-partial">Beta</span>
       </div>
 
@@ -544,15 +552,7 @@
       <div class="computer-card soon" onclick="selectComputer('scubapro')">
         <div class="computer-card-info">
           <div class="computer-card-name">ScubaPro</div>
-          <div class="computer-card-models">G2 &middot; G3 &middot; Aladin A1 &middot; Aladin A2 &middot; Luna 2.0</div>
-        </div>
-        <span class="computer-card-badge badge-soon">Soon</span>
-      </div>
-
-      <div class="computer-card soon" onclick="selectComputer('cressi')">
-        <div class="computer-card-info">
-          <div class="computer-card-name">Cressi</div>
-          <div class="computer-card-models">Cartesio &middot; Donatello &middot; Neon &middot; Nepto &middot; Goa</div>
+          <div class="computer-card-models">G2 &middot; G3 &middot; Aladin A1 &middot; Aladin A2 &middot; Luna 2.0 <span style="color:var(--warm);font-size:0.55rem">(Bluetooth Classic)</span></div>
         </div>
         <span class="computer-card-badge badge-soon">Soon</span>
       </div>
@@ -852,11 +852,11 @@ const COMPUTER_LABELS = {
 const COMPUTER_HINTS = {
   shearwater: 'On your Shearwater: press <strong style="color:white">LEFT</strong> until Bluetooth is highlighted, then <strong style="color:white">RIGHT</strong> to activate. Keep the computer within 30 cm.',
   suunto:     'On your Suunto: Settings &rarr; Connectivity &rarr; Airplane Mode: <strong style="color:white">Off</strong>. A passkey will appear on the dive computer &mdash; confirm it on your phone when prompted.',
-  hw_ostc:    'On your OSTC: navigate to <strong style="color:white">Bluetooth</strong> in the menu and activate BLE mode. Keep the computer within 30 cm. <em style="color:var(--warm)">Note: connection works but full dive parsing is still in development.</em>',
+  hw_ostc:    'On your OSTC: navigate to <strong style="color:white">Bluetooth</strong> in the menu and activate BLE mode. Keep the computer within 30 cm. The OSTC command protocol and dive log parsing are fully implemented.',
   mares:      '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Mares: activate Bluetooth from the main menu. Your device will be detected but dive download is not yet available.',
   pelagic:    '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Oceanic/Aqualung/Sherwood/Apeks: enable Bluetooth in device settings. Detection works; dive download is not yet available.',
   scubapro:   '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your ScubaPro: enable Bluetooth in the device menu. Detection works; dive download is not yet available.',
-  cressi:     '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Cressi: activate Bluetooth from device settings. Detection works; dive download is not yet available.',
+  cressi:     'On your Cressi: activate <strong style="color:white">Bluetooth</strong> from device settings. Keep the computer within 30 cm. <em style="color:var(--warm)">Beta: tested against v4 firmware (200–299). Older firmware may need a future update.</em>',
   divesoft:   '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Divesoft: enable Bluetooth in the menu. Detection works; dive download is not yet available.',
 };
 
