@@ -521,11 +521,13 @@ class BridgeService : Service() {
 
     @SuppressLint("MissingPermission")
     private suspend fun downloadShearwater(device: BluetoothDevice): List<DiveSummary> {
-        val slipBuf = mutableListOf<Byte>()
-        val pktCh   = Channel<ByteArray>(Channel.UNLIMITED)
-        val done    = CompletableDeferred<Unit>()
-        val charRef = CompletableDeferred<BluetoothGattCharacteristic>()
+        val pktCh    = Channel<ByteArray>(Channel.UNLIMITED)
+        val done     = CompletableDeferred<Unit>()
+        val charRef  = CompletableDeferred<BluetoothGattCharacteristic>()
         var frameSeq = 0
+        // Frame reassembly: each BLE notification = [nframes, frameIdx, data...]
+        var swExpected = 0
+        val swChunks   = mutableListOf<ByteArray>()
 
         setState(state.get().copy(message = "Connecting to ${device.name ?: device.address}…", progress = 22))
 
@@ -573,15 +575,23 @@ class BridgeService : Service() {
             @Deprecated("Required for API < 33")
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
                 val data = characteristic.value
-                if (data.isEmpty()) return
-                // Log raw notification for protocol debugging
-                Log.d(TAG, "SW notify(${data.size}): ${data.take(6).map { "0x${it.toUByte().toString(16)}" }}")
-                // Feed all bytes to SLIP decoder. slipDecode ignores any bytes before the
-                // first 0xC0 marker, so 2-byte BLE frame headers (if present) are harmless.
-                slipBuf.addAll(data.toList())
-                val decoded = mutableListOf<ByteArray>()
-                slipDecode(slipBuf, decoded)
-                decoded.forEach { pktCh.trySend(it) }
+                if (data.size < 3) return
+                val nframes  = data[0].toInt() and 0xFF
+                val frameIdx = data[1].toInt() and 0xFF
+                val chunk    = data.copyOfRange(2, data.size)
+                Log.d(TAG, "SW notify($nframes/$frameIdx/${data.size}): ${data.take(8).map { "0x${it.toUByte().toString(16)}" }}")
+                if (frameIdx == 0) {
+                    swChunks.clear()
+                    swExpected = nframes
+                }
+                if (frameIdx == swChunks.size) swChunks.add(chunk)
+                if (swChunks.size >= swExpected && swExpected > 0) {
+                    val pkt = swChunks.fold(ByteArray(0)) { acc, b -> acc + b }
+                    Log.d(TAG, "SW packet(${pkt.size}): ${pkt.take(12).map { "0x${it.toUByte().toString(16)}" }}")
+                    pktCh.trySend(pkt)
+                    swChunks.clear()
+                    swExpected = 0
+                }
             }
         }
 
@@ -603,18 +613,11 @@ class BridgeService : Service() {
             frameSeq += chunks.size
         }
 
-        // Response packets have header [0x01, 0xFF, len, 0x00] (note: bytes swapped vs requests).
-        // Accept either order for robustness.
-        fun swPayload(pkt: ByteArray): ByteArray? {
-            Log.d(TAG, "SW recv raw: ${pkt.take(8).map { "0x${it.toUByte().toString(16)}" }}")
-            return when {
-                pkt.size >= 5 && pkt[0] == 0x01.toByte() && pkt[1] == 0xFF.toByte() && pkt[3] == 0x00.toByte() ->
-                    pkt.copyOfRange(4, pkt.size)
-                pkt.size >= 5 && pkt[0] == 0xFF.toByte() && pkt[1] == 0x01.toByte() && pkt[3] == 0x00.toByte() ->
-                    pkt.copyOfRange(4, pkt.size)
-                else -> null
-            }
-        }
+        // Response packets: [0x01, 0xFF, len, 0x00, payload...] (confirmed from logcat)
+        fun swPayload(pkt: ByteArray): ByteArray? =
+            if (pkt.size >= 5 && pkt[0] == 0x01.toByte() && pkt[1] == 0xFF.toByte() && pkt[3] == 0x00.toByte())
+                pkt.copyOfRange(4, pkt.size)
+            else { Log.w(TAG, "SW unexpected pkt header: ${pkt.take(4).map { "0x${it.toUByte().toString(16)}" }}"); null }
 
         suspend fun swRecv(ms: Long = 10_000): ByteArray? =
             withTimeoutOrNull(ms) { pktCh.receive() }
