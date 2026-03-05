@@ -505,18 +505,31 @@ class BridgeService : Service() {
         return parseEonPackets(packets, device.name ?: "Suunto EON")
     }
 
-    // ── Shearwater download (SLIP over BLE) ───────────────────────────────────
+    // ── Shearwater download (SLIP over BLE, Shearwater proprietary protocol) ──
+    //
+    // Wire format (from libdivecomputer shearwater_petrel.c / shearwater_common.c):
+    //   Packet = SLIP( [0xFF, 0x01, payloadLen+1, 0x00, ...payload] )
+    //   BLE write = [nChunks, chunkIdx] + up to 30 bytes of SLIP data per write
+    //   BLE notify = same 2-byte header, must be stripped before SLIP decode
+    //   Write type = WRITE_WITHOUT_RESPONSE (no onCharacteristicWrite callback)
+    //
+    // Command flow:
+    //   RDBI 0x8011 → firmware version
+    //   RDBI 0x8021 → manifest address + dive count
+    //   0x35 init + 0x36 block × N + 0x37 quit → download manifest
+    //   Manifest: 32-byte entries with address/size/date/depth/duration/temp
 
     @SuppressLint("MissingPermission")
     private suspend fun downloadShearwater(device: BluetoothDevice): List<DiveSummary> {
-        val packets  = mutableListOf<ByteArray>()
-        val rxBuffer = mutableListOf<Byte>()
-        val ready    = CompletableDeferred<BluetoothGattCharacteristic>()
-        val done     = CompletableDeferred<Unit>()
+        val slipBuf = mutableListOf<Byte>()
+        val pktCh   = Channel<ByteArray>(Channel.UNLIMITED)
+        val done    = CompletableDeferred<Unit>()
+        val charRef = CompletableDeferred<BluetoothGattCharacteristic>()
+        var frameSeq = 0
 
         setState(state.get().copy(message = "Connecting to ${device.name ?: device.address}…", progress = 22))
 
-        val gattCallback = object : BluetoothGattCallback() {
+        val gattCb = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 when {
                     newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS -> {
@@ -524,12 +537,14 @@ class BridgeService : Service() {
                         gatt.discoverServices()
                     }
                     newState == BluetoothProfile.STATE_DISCONNECTED -> {
-                        if (status != BluetoothGatt.GATT_SUCCESS && !done.isCompleted)
-                            done.completeExceptionally(Exception("GATT disconnected (status $status). Move closer and retry."))
-                        else done.complete(Unit)
+                        if (!done.isCompleted) {
+                            if (status != BluetoothGatt.GATT_SUCCESS)
+                                done.completeExceptionally(Exception("GATT disconnected (status $status)"))
+                            else done.complete(Unit)
+                        }
                     }
-                    status != BluetoothGatt.GATT_SUCCESS ->
-                        done.completeExceptionally(Exception("GATT error $status — try toggling Bluetooth off/on."))
+                    status != BluetoothGatt.GATT_SUCCESS && !done.isCompleted ->
+                        done.completeExceptionally(Exception("GATT error $status — try toggling Bluetooth"))
                 }
             }
 
@@ -539,56 +554,179 @@ class BridgeService : Service() {
                     return
                 }
                 val char = gatt.getService(SW_SERVICE)?.getCharacteristic(SW_CHAR) ?: run {
-                    done.completeExceptionally(
-                        Exception("Shearwater service not found — put device in Bluetooth mode first")
-                    )
+                    done.completeExceptionally(Exception("Shearwater service not found — put device in Bluetooth mode"))
                     return
                 }
+                char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                 setState(state.get().copy(message = "Enabling notifications…", progress = 36))
                 gatt.setCharacteristicNotification(char, true)
                 char.getDescriptor(CCCD)?.also {
                     it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                     gatt.writeDescriptor(it)
-                }
-                ready.complete(char)
+                } ?: charRef.complete(char)
             }
 
             override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-                scope.launch {
-                    val char = ready.await()
-                    setState(state.get().copy(message = "Requesting firmware version…", progress = 42))
-                    char.value = slipEncode(byteArrayOf(0x01,0x00,0xFF.toByte(),0x01,0x04,0x00,0x22,0x80.toByte(),0x10,0xC0.toByte()))
-                    gatt.writeCharacteristic(char)
-                    delay(1500)
-                    setState(state.get().copy(message = "Requesting dive list…", progress = 48))
-                    char.value = slipEncode(byteArrayOf(0x01,0x00,0xFF.toByte(),0x01,0x05,0x00,0x2E,0x90.toByte(),0x20,0x00,0xC0.toByte()))
-                    gatt.writeCharacteristic(char)
-                    delay(8000)
-                    setState(state.get().copy(message = "Transfer complete — parsing…", progress = 70))
-                    gatt.disconnect()
-                }
+                gatt.getService(SW_SERVICE)?.getCharacteristic(SW_CHAR)?.let { charRef.complete(it) }
             }
 
             @Deprecated("Required for API < 33")
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-                rxBuffer.addAll(characteristic.value.toList())
-                slipDecode(rxBuffer, packets)
-                if (packets.size > 0)
-                    setState(state.get().copy(
-                        message  = "Receiving… (${packets.size} packets, ${rxBuffer.size} bytes buffered)",
-                        progress = 55 + minOf(15, packets.size)
-                    ))
+                val data = characteristic.value
+                // Each BLE notification starts with 2-byte frame header [nChunks, chunkIdx] — skip it
+                if (data.size > 2) {
+                    slipBuf.addAll(data.drop(2))
+                    val decoded = mutableListOf<ByteArray>()
+                    slipDecode(slipBuf, decoded)
+                    decoded.forEach { pktCh.trySend(it) }
+                }
             }
         }
 
-        val gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        withTimeoutOrNull(30_000) { done.await() }
-            ?: run { gatt.close(); throw Exception("Shearwater timed out — is the device in Bluetooth mode?") }
-        gatt.close()
+        val gatt = device.connectGatt(this, false, gattCb, BluetoothDevice.TRANSPORT_LE)
+        val char = withTimeoutOrNull(15_000) { charRef.await() }
+            ?: run { gatt.close(); throw Exception("Shearwater BLE setup timed out") }
 
-        if (packets.isEmpty()) throw Exception("Connected but received no dive data — make sure device is in Bluetooth download mode")
-        setState(state.get().copy(message = "Parsing ${packets.size} packets…", progress = 75))
-        return parseShearwaterPackets(packets, device.name ?: "Shearwater")
+        // ── Protocol helpers ─────────────────────────────────────────────────
+        fun swSend(payload: ByteArray) {
+            val slip   = slipEncode(byteArrayOf(0xFF.toByte(), 0x01, (payload.size + 1).toByte(), 0x00) + payload)
+            val chunks = slip.toList().chunked(30)
+            for ((i, chunk) in chunks.withIndex()) {
+                char.value = byteArrayOf(chunks.size.toByte(), (frameSeq + i).toByte()) + chunk.toByteArray()
+                gatt.writeCharacteristic(char)
+            }
+            frameSeq += chunks.size
+        }
+
+        // Extract payload from response packet: [0xFF, 0x01, len, 0x00, ...payload]
+        fun swPayload(pkt: ByteArray): ByteArray? =
+            if (pkt.size >= 5 && pkt[0] == 0xFF.toByte() && pkt[1] == 0x01.toByte() && pkt[3] == 0x00.toByte())
+                pkt.copyOfRange(4, pkt.size)
+            else null
+
+        suspend fun swRecv(ms: Long = 10_000): ByteArray? =
+            withTimeoutOrNull(ms) { pktCh.receive() }
+
+        return try {
+            // ── 1. Firmware version ───────────────────────────────────────────
+            setState(state.get().copy(message = "Reading firmware version…", progress = 40))
+            swSend(byteArrayOf(0x22, 0x80.toByte(), 0x11)) // RDBI ID_FIRMWARE
+            val fwPkt = swRecv(8_000)
+            Log.i(TAG, "SW firmware pkt: ${fwPkt?.map { "0x${it.toUByte().toString(16)}" }}")
+
+            // ── 2. Log upload info → manifest address + dive count ────────────
+            setState(state.get().copy(message = "Requesting dive manifest info…", progress = 45))
+            swSend(byteArrayOf(0x22, 0x80.toByte(), 0x21)) // RDBI ID_LOGUPLOAD
+            val logPkt     = swRecv(8_000)
+            val logPayload = logPkt?.let { swPayload(it) }
+            Log.i(TAG, "SW logupload: ${logPayload?.map { "0x${it.toUByte().toString(16)}" }}")
+
+            var manifestAddr = 0xE0000000L
+            var numDives     = 64
+            if (logPayload != null && logPayload.size >= 8 && logPayload[0] == 0x62.toByte()) {
+                // Response: [0x62, 0x80, 0x21, format, addr×4, ndives×2, ...]
+                if (logPayload.size >= 9) {
+                    manifestAddr = ((logPayload[3].toLong() and 0xFF) shl 24) or
+                                   ((logPayload[4].toLong() and 0xFF) shl 16) or
+                                   ((logPayload[5].toLong() and 0xFF) shl 8)  or
+                                   (logPayload[6].toLong() and 0xFF)
+                }
+                if (logPayload.size >= 11)
+                    numDives = ((logPayload[7].toInt() and 0xFF) shl 8) or (logPayload[8].toInt() and 0xFF)
+            }
+            numDives = numDives.coerceIn(1, 256)
+            Log.i(TAG, "SW manifest: addr=0x${manifestAddr.toString(16)} numDives=$numDives")
+
+            // ── 3. Download manifest (32 bytes per dive entry) ────────────────
+            val ENTRY_SIZE   = 32
+            val manifestSize = numDives * ENTRY_SIZE
+            setState(state.get().copy(message = "Downloading dive list ($numDives entries)…", progress = 50))
+
+            fun Int.b3() = byteArrayOf(((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
+            fun Long.b4() = byteArrayOf(((this shr 24) and 0xFF).toByte(), ((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
+
+            swSend(byteArrayOf(0x35, 0x00, 0x34) + manifestAddr.b4() + manifestSize.b3())
+            val initAck = swRecv(8_000)
+            Log.i(TAG, "SW manifest init: ${initAck?.map { "0x${it.toUByte().toString(16)}" }}")
+
+            val manifestData = mutableListOf<Byte>()
+            var blockNum = 1
+            while (manifestData.size < manifestSize && blockNum <= 128) {
+                swSend(byteArrayOf(0x36, blockNum.toByte()))
+                val blkPkt = swRecv(15_000) ?: break
+                val blkPay = swPayload(blkPkt)
+                if (blkPay != null && blkPay.isNotEmpty() && blkPay[0] == 0x76.toByte()) {
+                    val blkData = blkPay.drop(2) // skip [0x76, block_num]
+                    manifestData.addAll(blkData)
+                    Log.d(TAG, "SW block $blockNum: ${blkData.size} bytes (total ${manifestData.size})")
+                } else {
+                    Log.w(TAG, "SW block $blockNum unexpected: ${blkPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
+                    break
+                }
+                blockNum++
+            }
+            swSend(byteArrayOf(0x37)) // quit download
+
+            Log.i(TAG, "SW manifest: ${manifestData.size}/${manifestSize} bytes, blocks=$blockNum")
+            setState(state.get().copy(message = "Parsing dive manifest…", progress = 70))
+
+            // ── 4. Parse manifest entries ─────────────────────────────────────
+            // 32-byte entry layout (Shearwater proprietary):
+            //  0..3  dive record address (BE)
+            //  4..7  dive record size (BE)
+            //  8     dive type / flags
+            //  9..11 date: year-2000, month, day
+            // 12..14 time: hour, minute, second
+            // 15..16 max depth cm (BE)
+            // 17..18 dive duration seconds (BE)
+            // 19..20 min temp ×10°C (BE signed)
+            val dives = mutableListOf<DiveSummary>()
+            var seq = 0
+            var off = 0
+            while (off + ENTRY_SIZE <= manifestData.size) {
+                val e = manifestData.subList(off, off + ENTRY_SIZE).toByteArray()
+                off += ENTRY_SIZE
+                if (e.all { it == 0xFF.toByte() } || e.all { it == 0x00.toByte() }) continue
+                Log.d(TAG, "SW entry@${off-ENTRY_SIZE}: ${e.map { "0x${it.toUByte().toString(16)}" }}")
+                try {
+                    val year  = (e[9].toInt()  and 0xFF) + 2000
+                    val month = (e[10].toInt() and 0xFF)
+                    val day   = (e[11].toInt() and 0xFF)
+                    val hour  = (e[12].toInt() and 0xFF)
+                    val min   = (e[13].toInt() and 0xFF)
+                    val sec   = (e[14].toInt() and 0xFF)
+                    val depthCm = ((e[15].toInt() and 0xFF) shl 8) or (e[16].toInt() and 0xFF)
+                    val durSec  = ((e[17].toInt() and 0xFF) shl 8) or (e[18].toInt() and 0xFF)
+                    val tempRaw = ((e[19].toInt() shl 8) or (e[20].toInt() and 0xFF)).toShort().toInt()
+
+                    if (depthCm < 50 || durSec < 30 || year < 2010 || year > 2035 ||
+                        month !in 1..12 || day !in 1..31) continue
+
+                    seq++
+                    dives.add(DiveSummary(
+                        source    = device.name ?: "Shearwater",
+                        number    = seq,
+                        divedAt   = String.format(Locale.US, "%04d-%02d-%02dT%02d:%02d:%02dZ", year, month, day, hour, min, sec),
+                        maxDepthM = depthCm / 100.0,
+                        durationS = durSec,
+                        tempC     = if (tempRaw in -50..500) tempRaw / 10.0 else null
+                    ))
+                    Log.i(TAG, "SW dive $seq: $year-$month-$day ${depthCm/100.0}m ${durSec}s")
+                } catch (ex: Exception) {
+                    Log.w(TAG, "SW entry parse: ${ex.message}")
+                }
+            }
+
+            gatt.disconnect()
+            withTimeoutOrNull(5_000) { done.await() }
+            gatt.close()
+            dives
+        } catch (e: Exception) {
+            runCatching { gatt.disconnect() }
+            withTimeoutOrNull(3_000) { done.await() }
+            gatt.close()
+            throw e
+        }
     }
 
     // ── Heinrichs-Weikamp OSTC download — Telit Terminal I/O + OSTC command protocol
@@ -1096,46 +1234,6 @@ class BridgeService : Service() {
     }
 
     // ── Packet parsers ────────────────────────────────────────────────────────
-
-    private fun parseShearwaterPackets(packets: List<ByteArray>, source: String): List<DiveSummary> {
-        val dives = mutableListOf<DiveSummary>()
-        var seq = 0
-        for (pkt in packets) {
-            if (pkt.size < 16) continue
-            val depth    = ((pkt[8].toInt() and 0xFF) shl 8 or (pkt[9].toInt() and 0xFF)) * 0.01
-            val duration = (pkt[10].toInt() and 0xFF) shl 8 or (pkt[11].toInt() and 0xFF)
-            val tsOffset = ((pkt[12].toLong() and 0xFF) shl 24) or
-                           ((pkt[13].toLong() and 0xFF) shl 16) or
-                           ((pkt[14].toLong() and 0xFF) shl 8)  or
-                           (pkt[15].toLong()  and 0xFF)
-            if (depth < 0.5 || duration < 30) continue
-
-            val epoch2000 = 946684800L
-            val ts = (epoch2000 + tsOffset) * 1000L
-            val divedAt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-                .apply { timeZone = TimeZone.getTimeZone("UTC") }
-                .format(java.util.Date(ts))
-
-            var tempC: Double? = null
-            if (pkt.size >= 18) {
-                val raw = ((pkt[16].toInt() and 0xFF) shl 8) or (pkt[17].toInt() and 0xFF)
-                val k10 = raw / 10.0 - 273.15
-                val c10 = raw / 10.0
-                tempC = when {
-                    k10 >= -5 && k10 <= 50 -> k10
-                    c10 >= -5 && c10 <= 50 -> c10
-                    else -> null
-                }
-            }
-
-            seq++
-            dives.add(DiveSummary(
-                source = source, number = seq, divedAt = divedAt,
-                maxDepthM = depth, durationS = duration, tempC = tempC
-            ))
-        }
-        return dives
-    }
 
     private fun parseEonPackets(packets: List<ByteArray>, source: String): List<DiveSummary> {
         val dives = mutableListOf<DiveSummary>()
