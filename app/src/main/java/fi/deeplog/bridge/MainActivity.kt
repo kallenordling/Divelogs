@@ -167,5 +167,13 @@ class MainActivity : AppCompatActivity() {
             getSharedPreferences("deeplog", MODE_PRIVATE).edit()
                 .putString("username", name).apply()
         }
+
+        @JavascriptInterface
+        fun saveSupabaseConfig(url: String, key: String) {
+            getSharedPreferences("deeplog", MODE_PRIVATE).edit()
+                .putString("supabase_url", url)
+                .putString("supabase_key", key)
+                .apply()
+        }
     }
 }

@@ -1408,11 +1408,14 @@ class BridgeService : Service() {
     // ── Supabase upload ───────────────────────────────────────────────────────
 
     private fun uploadDive(dive: DiveSummary) {
-        val url  = java.net.URL("$SUPABASE_URL/rest/v1/dives")
+        val prefs = getSharedPreferences("deeplog", android.content.Context.MODE_PRIVATE)
+        val sbUrl = prefs.getString("supabase_url", SUPABASE_URL)?.trimEnd('/') ?: SUPABASE_URL
+        val sbKey = prefs.getString("supabase_key", SUPABASE_KEY) ?: SUPABASE_KEY
+        val url  = java.net.URL("$sbUrl/rest/v1/dives")
         val conn = url.openConnection() as java.net.HttpURLConnection
         conn.requestMethod = "POST"
-        conn.setRequestProperty("apikey",        SUPABASE_KEY)
-        conn.setRequestProperty("Authorization", "Bearer $SUPABASE_KEY")
+        conn.setRequestProperty("apikey",        sbKey)
+        conn.setRequestProperty("Authorization", "Bearer $sbKey")
         conn.setRequestProperty("Content-Type",  "application/json")
         conn.setRequestProperty("Prefer",        "return=minimal")
         conn.doOutput = true

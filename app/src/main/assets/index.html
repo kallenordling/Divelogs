@@ -1556,6 +1556,8 @@ function saveSettings() {
   cfg.key      = document.getElementById('cfg-key').value.trim();
   cfg.username = document.getElementById('cfg-username').value.trim().toLowerCase().replace(/\s+/g, '_') || 'anonymous';
   localStorage.setItem('deeplog_cfg', JSON.stringify(cfg));
+  if (window.AndroidBridge) AndroidBridge.saveSupabaseConfig(cfg.url, cfg.key);
+  if (window.AndroidBridge) AndroidBridge.saveUsername(cfg.username);
   updateCloudUI();
   testConnection();
 }
