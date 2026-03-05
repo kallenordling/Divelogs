@@ -678,92 +678,108 @@ class BridgeService : Service() {
             }
             Log.i(TAG, "SW logbook format indicator: 0x${formatAddr.toString(16)}")
 
-            // ── 3. Download manifest ──────────────────────────────────────────
-            val ENTRY_SIZE   = 30     // Perdix V87 BLE blocks deliver 30 bytes per entry
+            // ── 3 & 4. Download manifest pages + parse entries ───────────────
+            // The device maintains a sequential read pointer: each 0x35 session at
+            // MANIFEST_ADDR returns the NEXT batch of entries. Loop until we get an
+            // empty batch (no valid 0xA5C4 headers), matching libdivecomputer behaviour.
+            val ENTRY_SIZE   = 30       // Perdix V87: 30 bytes per BLE block = 1 entry
             val manifestAddr = 0xE0000000L
-            val manifestSize = 0x600   // 1536 bytes = 48 × 32-byte entries (stop early on NAK)
-            setState(state.get().copy(message = "Downloading dive manifest…", progress = 50))
+            val manifestSize = 0x600    // request size per session (device sends what it has)
 
             fun Int.b3() = byteArrayOf(((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
             fun Long.b4() = byteArrayOf(((this shr 24) and 0xFF).toByte(), ((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
 
-            swSend(byteArrayOf(0x35, 0x00, 0x34) + manifestAddr.b4() + manifestSize.b3())
-            val initAck = swRecv(8_000)
-            Log.i(TAG, "SW manifest init: ${initAck?.map { "0x${it.toUByte().toString(16)}" }}")
-
-            val manifestData = mutableListOf<Byte>()
-            var blockNum = 1
-            while (manifestData.size < manifestSize && blockNum <= 128) {
-                swSend(byteArrayOf(0x36, blockNum.toByte()))
-                val blkPkt = swRecv(15_000) ?: break
-                val blkPay = swPayload(blkPkt)
-                if (blkPay != null && blkPay.isNotEmpty() && blkPay[0] == 0x76.toByte()) {
-                    val blkData = blkPay.drop(2) // skip [0x76, block_num]
-                    manifestData.addAll(blkData)
-                    Log.d(TAG, "SW block $blockNum: ${blkData.size} bytes (total ${manifestData.size})")
-                } else {
-                    Log.w(TAG, "SW block $blockNum unexpected: ${blkPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
-                    break
-                }
-                blockNum++
-            }
-            swSend(byteArrayOf(0x37)) // quit download
-
-            Log.i(TAG, "SW manifest: ${manifestData.size}/${manifestSize} bytes, blocks=$blockNum")
-            setState(state.get().copy(message = "Parsing dive manifest…", progress = 70))
-
-            // ── 4. Parse manifest entries ─────────────────────────────────────
-            // 30-byte Perdix V87 manifest entry layout (decoded from logcat):
-            //  [0..1]   0xA5C4 = valid dive header
-            //  [2]      unknown
-            //  [3]      sequence byte (decreasing by 4 per entry, newest first)
-            //  [4..7]   dive START Unix timestamp, big-endian seconds
-            //  [8..11]  dive END   Unix timestamp, big-endian seconds
-            //  [12..19] unknown (possibly depth/temp/address fields)
-            //  [20..23] dive record flash address, big-endian
-            //  [24..29] unknown
+            // 30-byte entry layout (decoded from Perdix V87 logcat):
+            //  [0..1]   0xA5C4 = valid dive, 0x5A23 = deleted
+            //  [4..7]   dive START Unix timestamp (BE seconds)
+            //  [8..11]  dive END   Unix timestamp (BE seconds)
+            //  [20..23] dive record flash address (BE) — for future individual dive download
             val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
                 .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
             val dives = mutableListOf<DiveSummary>()
             var seq = 0
-            var off = 0
-            while (off + ENTRY_SIZE <= manifestData.size) {
-                val e = manifestData.subList(off, off + ENTRY_SIZE).toByteArray()
-                off += ENTRY_SIZE
-                val hdr = ((e[0].toInt() and 0xFF) shl 8) or (e[1].toInt() and 0xFF)
-                if (hdr != 0xA5C4) continue
-                Log.i(TAG, "SW entry@${off-ENTRY_SIZE}: ${e.map { "0x${it.toUByte().toString(16)}" }}")
-                try {
-                    val startTs = ((e[4].toLong() and 0xFF) shl 24) or
-                                  ((e[5].toLong() and 0xFF) shl 16) or
-                                  ((e[6].toLong() and 0xFF) shl 8)  or
-                                   (e[7].toLong() and 0xFF)
-                    val endTs   = ((e[8].toLong() and 0xFF) shl 24) or
-                                  ((e[9].toLong() and 0xFF) shl 16) or
-                                  ((e[10].toLong() and 0xFF) shl 8) or
-                                   (e[11].toLong() and 0xFF)
-                    val durSec  = (endTs - startTs).toInt().coerceIn(0, 86400)
-                    val year    = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
-                        .apply { time = java.util.Date(startTs * 1000L) }
-                        .get(java.util.Calendar.YEAR)
-                    if (startTs < 1_000_000_000L || year !in 2010..2035) {
-                        Log.w(TAG, "SW entry@${off-ENTRY_SIZE}: timestamp out of range ($startTs)")
-                        continue
+            var pageNum = 0
+            val MAX_PAGES = 20  // safety cap (20 × 12 entries = 240 dives max)
+
+            while (pageNum < MAX_PAGES) {
+                pageNum++
+                setState(state.get().copy(
+                    message  = "Downloading dive list… (found ${dives.size} so far)",
+                    progress = 50 + (pageNum * 2).coerceAtMost(18)
+                ))
+
+                // Init download session for this page
+                swSend(byteArrayOf(0x35, 0x00, 0x34) + manifestAddr.b4() + manifestSize.b3())
+                val initAck = swRecv(8_000)
+                Log.i(TAG, "SW manifest page $pageNum init: ${initAck?.map { "0x${it.toUByte().toString(16)}" }}")
+                if (initAck == null) { Log.w(TAG, "SW manifest init timeout, stopping"); break }
+
+                // Download blocks until device NAKs (= end of this page's data)
+                val pageData = mutableListOf<Byte>()
+                var blockNum = 1
+                while (blockNum <= 128) {
+                    swSend(byteArrayOf(0x36, blockNum.toByte()))
+                    val blkPkt = swRecv(15_000) ?: break
+                    val blkPay = swPayload(blkPkt)
+                    if (blkPay != null && blkPay.isNotEmpty() && blkPay[0] == 0x76.toByte()) {
+                        pageData.addAll(blkPay.drop(2)) // skip [0x76, blockNum]
+                        blockNum++
+                    } else {
+                        Log.d(TAG, "SW page $pageNum block $blockNum end: ${blkPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
+                        break
                     }
-                    val divedAt = sdf.format(java.util.Date(startTs * 1000L))
-                    seq++
-                    dives.add(DiveSummary(
-                        source    = device.name ?: "Shearwater",
-                        number    = seq,
-                        divedAt   = divedAt,
-                        maxDepthM = 0.0,   // requires individual dive download — TODO
-                        durationS = durSec,
-                        tempC     = null
-                    ))
-                    Log.i(TAG, "SW dive $seq: $divedAt dur=${durSec}s")
-                } catch (ex: Exception) {
-                    Log.w(TAG, "SW entry parse: ${ex.message}")
                 }
+                swSend(byteArrayOf(0x37)) // end session
+                Log.i(TAG, "SW manifest page $pageNum: ${pageData.size} bytes, $blockNum blocks")
+
+                // Parse entries from this page
+                var entriesThisPage = 0
+                var off = 0
+                while (off + ENTRY_SIZE <= pageData.size) {
+                    val e = pageData.subList(off, off + ENTRY_SIZE).toByteArray()
+                    off += ENTRY_SIZE
+                    val hdr = ((e[0].toInt() and 0xFF) shl 8) or (e[1].toInt() and 0xFF)
+                    if (hdr != 0xA5C4) continue
+                    entriesThisPage++
+                    Log.i(TAG, "SW p$pageNum entry: ${e.map { "0x${it.toUByte().toString(16)}" }}")
+                    try {
+                        val startTs = ((e[4].toLong() and 0xFF) shl 24) or
+                                      ((e[5].toLong() and 0xFF) shl 16) or
+                                      ((e[6].toLong() and 0xFF) shl 8)  or
+                                       (e[7].toLong() and 0xFF)
+                        val endTs   = ((e[8].toLong() and 0xFF) shl 24) or
+                                      ((e[9].toLong() and 0xFF) shl 16) or
+                                      ((e[10].toLong() and 0xFF) shl 8) or
+                                       (e[11].toLong() and 0xFF)
+                        val durSec  = (endTs - startTs).toInt().coerceIn(0, 86400)
+                        val year    = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+                            .apply { time = java.util.Date(startTs * 1000L) }
+                            .get(java.util.Calendar.YEAR)
+                        if (startTs < 1_000_000_000L || year !in 2010..2035) {
+                            Log.w(TAG, "SW entry: timestamp out of range ($startTs)"); continue
+                        }
+                        seq++
+                        val divedAt = sdf.format(java.util.Date(startTs * 1000L))
+                        dives.add(DiveSummary(
+                            source    = device.name ?: "Shearwater",
+                            number    = seq,
+                            divedAt   = divedAt,
+                            maxDepthM = 0.0,   // TODO: individual dive download
+                            durationS = durSec,
+                            tempC     = null
+                        ))
+                        Log.i(TAG, "SW dive $seq: $divedAt dur=${durSec}s")
+                        setState(state.get().copy(
+                            message  = "Downloading dive $seq…",
+                            progress = 50 + (pageNum * 2).coerceAtMost(18)
+                        ))
+                    } catch (ex: Exception) {
+                        Log.w(TAG, "SW entry parse: ${ex.message}")
+                    }
+                }
+
+                Log.i(TAG, "SW page $pageNum: $entriesThisPage valid entries (total dives: ${dives.size})")
+                if (entriesThisPage == 0) { Log.i(TAG, "SW manifest complete"); break }
             }
 
             gatt.disconnect()
