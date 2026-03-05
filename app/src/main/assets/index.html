@@ -1352,17 +1352,36 @@ async function bridgeCheck() {
   }
 }
 
+// Per-computer start hints shown immediately in the log
+const COMPUTER_START_HINTS = {
+  shearwater: '📡 Put Shearwater in Bluetooth mode first, then press Download.',
+  suunto:     '📡 Suunto: Settings → Connectivity → Airplane Mode OFF. A passkey will appear on the device screen — confirm it on your phone.',
+  hw_ostc:    '📡 OSTC: go to Bluetooth in the menu and activate BLE mode.',
+  cressi:     '📡 Cressi: activate Bluetooth from device settings.',
+  mares:      '📡 Mares: activate Bluetooth from the main menu.',
+  pelagic:    '📡 Oceanic/Aqualung: enable Bluetooth in device settings.',
+  scubapro:   '📡 ScubaPro: enable Bluetooth in the device menu.',
+  divesoft:   '📡 Divesoft: enable Bluetooth from the menu.',
+};
+
+let _lastLoggedMsg = '';   // deduplicate consecutive identical log lines
+let _scanStartTime  = 0;
+
 async function bridgeDownload() {
   const btn     = document.getElementById('bridge-dl-btn');
   const address = document.getElementById('bridge-address')?.value.trim() || '';
   btn.disabled  = true;
   document.getElementById('bridge-log').innerHTML = '';
-  bridgeLog('Starting download...', '');
+  _lastLoggedMsg = '';
+  _scanStartTime = Date.now();
+
+  // Show computer-specific preparation hint
+  const hint = COMPUTER_START_HINTS[selectedComputer] || '📡 Make sure Bluetooth is active on the dive computer.';
+  bridgeLog(hint, 'info');
 
   if (isAndroid()) {
     const username = cfg.username || window.AndroidBridge.getUsername() || 'anonymous';
-    window.AndroidBridge.startDownload(username, address, selectedComputer || 'shearwater');
-    bridgeLog('⚡ EON Steel: watch screen for passkey, confirm when Android dialog appears.', '');
+    window.AndroidBridge.startDownload(username, address);
     _startBridgePoll();
     return;
   }
@@ -1380,7 +1399,6 @@ async function bridgeDownload() {
       btn.disabled = false;
       return;
     }
-    bridgeLog('Download started — waiting for passkey pairing...', '');
     _startBridgePoll();
   } catch(e) {
     bridgeLog('✗ Could not reach bridge: ' + e.message, 'err');
@@ -1390,7 +1408,7 @@ async function bridgeDownload() {
 
 function _startBridgePoll() {
   if (_bridgePollTimer) clearInterval(_bridgePollTimer);
-  _bridgePollTimer = setInterval(_pollBridge, 1500);
+  _bridgePollTimer = setInterval(_pollBridge, 500);
 }
 
 async function _pollBridge() {
@@ -1402,7 +1420,22 @@ async function _pollBridge() {
       const r = await fetch(bridgeUrl() + '/status', { signal: AbortSignal.timeout(3000) });
       s = await r.json();
     }
-    bridgeSetProgress(s.progress || 0, s.message || '');
+
+    const msg = s.message || '';
+    bridgeSetProgress(s.progress || 0, msg);
+
+    // Log only when message changes, to avoid flooding
+    if (msg && msg !== _lastLoggedMsg) {
+      _lastLoggedMsg = msg;
+      const elapsed = Math.round((Date.now() - _scanStartTime) / 1000);
+      const prefix  = elapsed > 1 ? `[${elapsed}s] ` : '';
+      if (s.status === 'done' || s.status === 'error') {
+        // handled below
+      } else {
+        bridgeLog(prefix + msg, s.status === 'scanning' ? 'info' : '');
+      }
+    }
+
     if (s.status === 'done') {
       clearInterval(_bridgePollTimer);
       bridgeLog('✓ ' + s.message, 'ok');
@@ -1424,14 +1457,35 @@ async function _pollBridge() {
       }
     } else if (s.status === 'error') {
       clearInterval(_bridgePollTimer);
-      bridgeLog('✗ ' + (s.last_error || 'Unknown error'), 'err');
+      const errMsg = s.last_error || s.message || 'Unknown error';
+      bridgeLog('✗ ' + errMsg, 'err');
+      // Show computer-specific recovery tip
+      const tip = _recoveryTip(errMsg);
+      if (tip) bridgeLog('💡 ' + tip, 'info');
       document.getElementById('bridge-dl-btn').disabled = false;
       bridgeSetProgress(0, 'Failed');
-      toast('Bridge error: ' + (s.last_error || 'see log'), 'warn');
-    } else {
-      bridgeLog(s.status + ': ' + (s.message || ''), '');
+      toast('Error: ' + errMsg.slice(0, 60), 'warn');
     }
-  } catch(e) {}
+  } catch(e) {
+    // silently ignore transient fetch/parse errors
+  }
+}
+
+function _recoveryTip(errMsg) {
+  const e = errMsg.toLowerCase();
+  if (e.includes('no dive computers found') || e.includes('scan'))
+    return 'Make sure the dive computer is in Bluetooth mode and within 30 cm.';
+  if (e.includes('133') || e.includes('gatt') || e.includes('connection'))
+    return 'GATT connection failed. Move closer and try again, or restart Bluetooth on your phone.';
+  if (e.includes('service not found'))
+    return 'Connected but wrong service. The device may not be in download mode.';
+  if (e.includes('timed out') || e.includes('timeout'))
+    return 'Operation timed out. Check that the dive computer is awake and in range.';
+  if (e.includes('passkey') || e.includes('pairing'))
+    return 'Check the dive computer screen for a passkey and confirm the pairing on your phone.';
+  if (e.includes('bluetooth is off'))
+    return 'Enable Bluetooth in your phone settings.';
+  return null;
 }
 
 // ─── Cloud / Supabase ─────────────────────────────────────────────────────────

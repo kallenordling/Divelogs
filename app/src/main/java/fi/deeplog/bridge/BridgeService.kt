@@ -324,52 +324,62 @@ class BridgeService : Service() {
     private suspend fun scanForDevice(adapter: BluetoothAdapter): FoundDevice? {
         data class ScanHit(val device: BluetoothDevice, val serviceUuid: UUID)
         val result  = CompletableDeferred<ScanHit?>()
-        val scanner = adapter.bluetoothLeScanner ?: return null
+        val scanner = adapter.bluetoothLeScanner
+            ?: run {
+                setState(state.get().copy(lastError = "BLE scanner unavailable — is Bluetooth on?"))
+                return null
+            }
 
         // All known dive computer BLE service UUIDs — order matches Subsurface priority
         val knownServiceUuids = listOf(
-            HW_TELIT_SERVICE,
-            HW_UBLOX_SERVICE,
-            MARES_SERVICE,
-            EON_SERVICE,
-            PELAGIC_A_SERVICE,
-            PELAGIC_B_SERVICE,
-            SCUBAPRO_SERVICE,
-            SW_SERVICE,
-            DIVESOFT_SERVICE,
-            CRESSI_SERVICE,       // must come before NORDIC_UART
-            NORDIC_UART_SERVICE,
-            HALCYON_SERVICE,
+            HW_TELIT_SERVICE, HW_UBLOX_SERVICE, MARES_SERVICE, EON_SERVICE,
+            PELAGIC_A_SERVICE, PELAGIC_B_SERVICE, SCUBAPRO_SERVICE, SW_SERVICE,
+            DIVESOFT_SERVICE, CRESSI_SERVICE, NORDIC_UART_SERVICE, HALCYON_SERVICE,
         )
 
-        val filters = knownServiceUuids.map { uuid ->
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(uuid)).build()
-        }
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
+        val filters  = knownServiceUuids.map { ScanFilter.Builder().setServiceUuid(ParcelUuid(it)).build() }
+        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
 
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, r: ScanResult) {
                 if (result.isCompleted) return
-                // Determine which of our known UUIDs the device is advertising
-                val advUuids = r.scanRecord?.serviceUuids?.map { it.uuid } ?: emptyList()
-                val matchedUuid = knownServiceUuids.firstOrNull { it in advUuids }
-                    ?: knownServiceUuids.firstOrNull() // fallback if service filter matched but not in adv data
+                val advUuids    = r.scanRecord?.serviceUuids?.map { it.uuid } ?: emptyList()
+                val matchedUuid = knownServiceUuids.firstOrNull { it in advUuids } ?: EON_SERVICE
                 scanner.stopScan(this)
-                result.complete(ScanHit(r.device, matchedUuid ?: EON_SERVICE))
+                result.complete(ScanHit(r.device, matchedUuid))
             }
-            override fun onScanFailed(errorCode: Int) { result.complete(null) }
+            override fun onScanFailed(errorCode: Int) {
+                val reason = when (errorCode) {
+                    ScanCallback.SCAN_FAILED_ALREADY_STARTED        -> "scan already running"
+                    ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "app registration failed"
+                    ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED     -> "BLE unsupported"
+                    ScanCallback.SCAN_FAILED_INTERNAL_ERROR          -> "internal BLE error"
+                    else -> "error code $errorCode"
+                }
+                setState(state.get().copy(message = "BLE scan failed: $reason"))
+                result.complete(null)
+            }
         }
 
+        setState(state.get().copy(message = "Scanning… (15 s timeout)", progress = 12))
         scanner.startScan(filters, settings, callback)
-        val hit = withTimeoutOrNull(15_000) { result.await() }.also {
-            runCatching { scanner.stopScan(callback) }
-        }
-        // If timeout occurred, await the already-set result
-        val scanHit = if (result.isCompleted) result.await() else null
 
-        scanHit ?: return null
+        // Tick every 3 s so the user sees progress
+        val tickJob = scope.launch {
+            for (t in 3..15 step 3) {
+                delay(3_000)
+                if (!result.isCompleted)
+                    setState(state.get().copy(message = "Scanning… ${15 - t}s remaining", progress = 12 + t))
+            }
+        }
+
+        withTimeoutOrNull(15_000) { result.await() }
+        tickJob.cancel()
+        runCatching { scanner.stopScan(callback) }
+
+        val scanHit = if (result.isCompleted) result.await() else null
+        if (scanHit == null) return null
+
         val type = detectDeviceTypeByServiceUuid(scanHit.serviceUuid)
             .takeIf { it != DiveComputerType.UNKNOWN }
             ?: detectDeviceTypeByName(scanHit.device.name ?: "")
@@ -427,31 +437,45 @@ class BridgeService : Service() {
         val rxBuffer = mutableListOf<Byte>()
         val done     = CompletableDeferred<Unit>()
 
-        setState(state.get().copy(message = "Waiting for passkey pairing…", progress = 25))
+        setState(state.get().copy(message = "Connecting to ${device.name ?: device.address}…", progress = 22))
 
         val gattCallback = object : BluetoothGattCallback() {
             var txChar: BluetoothGattCharacteristic? = null
 
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    setState(state.get().copy(message = "Connected — discovering services…", progress = 35))
-                    gatt.discoverServices()
-                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    done.complete(Unit)
+                when {
+                    newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS -> {
+                        setState(state.get().copy(message = "Connected — check screen for passkey…", progress = 30))
+                        gatt.discoverServices()
+                    }
+                    newState == BluetoothProfile.STATE_DISCONNECTED -> {
+                        if (status != BluetoothGatt.GATT_SUCCESS && !done.isCompleted)
+                            done.completeExceptionally(Exception("GATT disconnected (status $status). Move closer and retry."))
+                        else done.complete(Unit)
+                    }
+                    status != BluetoothGatt.GATT_SUCCESS -> {
+                        done.completeExceptionally(Exception("GATT error $status — try disabling and re-enabling Bluetooth."))
+                    }
                 }
             }
 
             override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                val svc = gatt.getService(EON_SERVICE) ?: run {
-                    done.completeExceptionally(Exception("EON service not found"))
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    done.completeExceptionally(Exception("Service discovery failed (status $status)"))
                     return
                 }
+                val svc = gatt.getService(EON_SERVICE) ?: run {
+                    done.completeExceptionally(Exception("EON service not found — is the device in download mode?"))
+                    return
+                }
+                setState(state.get().copy(message = "Pairing… confirm passkey on device if prompted", progress = 38))
                 txChar = svc.getCharacteristic(EON_TX)
                 val rxChar = svc.getCharacteristic(EON_RX)
                 gatt.setCharacteristicNotification(rxChar, true)
-                val desc = rxChar.getDescriptor(CCCD)
-                desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(desc)
+                rxChar.getDescriptor(CCCD)?.also {
+                    it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    gatt.writeDescriptor(it)
+                }
             }
 
             override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
@@ -465,7 +489,7 @@ class BridgeService : Service() {
                 rxBuffer.addAll(characteristic.value.toList())
                 hdlcDecode(rxBuffer, packets)
                 setState(state.get().copy(
-                    message  = "Receiving… (${packets.size} packets)",
+                    message  = "Receiving data… (${packets.size} frames)",
                     progress = 50 + minOf(25, packets.size)
                 ))
             }
@@ -473,9 +497,11 @@ class BridgeService : Service() {
 
         val gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         withTimeoutOrNull(60_000) { done.await() }
+            ?: run { gatt.close(); throw Exception("Connection timed out after 60 s — is the device awake and nearby?") }
         gatt.close()
 
-        setState(state.get().copy(message = "Parsing ${packets.size} packets…", progress = 75))
+        if (packets.isEmpty()) throw Exception("Connected but received no data — check device is in Bluetooth download mode")
+        setState(state.get().copy(message = "Parsing ${packets.size} frames…", progress = 75))
         return parseEonPackets(packets, device.name ?: "Suunto EON")
     }
 
@@ -488,33 +514,57 @@ class BridgeService : Service() {
         val ready    = CompletableDeferred<BluetoothGattCharacteristic>()
         val done     = CompletableDeferred<Unit>()
 
+        setState(state.get().copy(message = "Connecting to ${device.name ?: device.address}…", progress = 22))
+
         val gattCallback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-                if (newState == BluetoothProfile.STATE_CONNECTED) gatt.discoverServices()
-                else if (newState == BluetoothProfile.STATE_DISCONNECTED) done.complete(Unit)
+                when {
+                    newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS -> {
+                        setState(state.get().copy(message = "Connected — discovering services…", progress = 30))
+                        gatt.discoverServices()
+                    }
+                    newState == BluetoothProfile.STATE_DISCONNECTED -> {
+                        if (status != BluetoothGatt.GATT_SUCCESS && !done.isCompleted)
+                            done.completeExceptionally(Exception("GATT disconnected (status $status). Move closer and retry."))
+                        else done.complete(Unit)
+                    }
+                    status != BluetoothGatt.GATT_SUCCESS ->
+                        done.completeExceptionally(Exception("GATT error $status — try toggling Bluetooth off/on."))
+                }
             }
 
             override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-                val char = gatt.getService(SW_SERVICE)?.getCharacteristic(SW_CHAR)
-                    ?: run { done.completeExceptionally(Exception("Shearwater service not found")); return }
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    done.completeExceptionally(Exception("Service discovery failed (status $status)"))
+                    return
+                }
+                val char = gatt.getService(SW_SERVICE)?.getCharacteristic(SW_CHAR) ?: run {
+                    done.completeExceptionally(
+                        Exception("Shearwater service not found — put device in Bluetooth mode first")
+                    )
+                    return
+                }
+                setState(state.get().copy(message = "Enabling notifications…", progress = 36))
                 gatt.setCharacteristicNotification(char, true)
-                val desc = char.getDescriptor(CCCD)
-                desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(desc)
+                char.getDescriptor(CCCD)?.also {
+                    it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    gatt.writeDescriptor(it)
+                }
                 ready.complete(char)
             }
 
             override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
                 scope.launch {
                     val char = ready.await()
-                    // Firmware version request
+                    setState(state.get().copy(message = "Requesting firmware version…", progress = 42))
                     char.value = slipEncode(byteArrayOf(0x01,0x00,0xFF.toByte(),0x01,0x04,0x00,0x22,0x80.toByte(),0x10,0xC0.toByte()))
                     gatt.writeCharacteristic(char)
                     delay(1500)
-                    // Dive list request
+                    setState(state.get().copy(message = "Requesting dive list…", progress = 48))
                     char.value = slipEncode(byteArrayOf(0x01,0x00,0xFF.toByte(),0x01,0x05,0x00,0x2E,0x90.toByte(),0x20,0x00,0xC0.toByte()))
                     gatt.writeCharacteristic(char)
                     delay(8000)
+                    setState(state.get().copy(message = "Transfer complete — parsing…", progress = 70))
                     gatt.disconnect()
                 }
             }
@@ -523,13 +573,21 @@ class BridgeService : Service() {
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
                 rxBuffer.addAll(characteristic.value.toList())
                 slipDecode(rxBuffer, packets)
+                if (packets.size > 0)
+                    setState(state.get().copy(
+                        message  = "Receiving… (${packets.size} packets, ${rxBuffer.size} bytes buffered)",
+                        progress = 55 + minOf(15, packets.size)
+                    ))
             }
         }
 
         val gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         withTimeoutOrNull(30_000) { done.await() }
+            ?: run { gatt.close(); throw Exception("Shearwater timed out — is the device in Bluetooth mode?") }
         gatt.close()
 
+        if (packets.isEmpty()) throw Exception("Connected but received no dive data — make sure device is in Bluetooth download mode")
+        setState(state.get().copy(message = "Parsing ${packets.size} packets…", progress = 75))
         return parseShearwaterPackets(packets, device.name ?: "Shearwater")
     }
 
