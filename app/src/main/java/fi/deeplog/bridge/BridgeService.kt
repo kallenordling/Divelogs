@@ -588,21 +588,31 @@ class BridgeService : Service() {
             ?: run { gatt.close(); throw Exception("Shearwater BLE setup timed out") }
 
         // ── Protocol helpers ─────────────────────────────────────────────────
-        fun swSend(payload: ByteArray) {
+        // Small delay between chunks avoids Android BLE TX-queue overflow
+        // when using WRITE_TYPE_NO_RESPONSE (no onCharacteristicWrite callback).
+        suspend fun swSend(payload: ByteArray) {
             val slip   = slipEncode(byteArrayOf(0xFF.toByte(), 0x01, (payload.size + 1).toByte(), 0x00) + payload)
             val chunks = slip.toList().chunked(30)
             for ((i, chunk) in chunks.withIndex()) {
                 char.value = byteArrayOf(chunks.size.toByte(), (frameSeq + i).toByte()) + chunk.toByteArray()
                 gatt.writeCharacteristic(char)
+                if (chunks.size > 1) delay(20) // give BLE stack time between chunks
             }
             frameSeq += chunks.size
         }
 
-        // Extract payload from response packet: [0xFF, 0x01, len, 0x00, ...payload]
-        fun swPayload(pkt: ByteArray): ByteArray? =
-            if (pkt.size >= 5 && pkt[0] == 0xFF.toByte() && pkt[1] == 0x01.toByte() && pkt[3] == 0x00.toByte())
-                pkt.copyOfRange(4, pkt.size)
-            else null
+        // Response packets have header [0x01, 0xFF, len, 0x00] (note: bytes swapped vs requests).
+        // Accept either order for robustness.
+        fun swPayload(pkt: ByteArray): ByteArray? {
+            Log.d(TAG, "SW recv raw: ${pkt.take(8).map { "0x${it.toUByte().toString(16)}" }}")
+            return when {
+                pkt.size >= 5 && pkt[0] == 0x01.toByte() && pkt[1] == 0xFF.toByte() && pkt[3] == 0x00.toByte() ->
+                    pkt.copyOfRange(4, pkt.size)
+                pkt.size >= 5 && pkt[0] == 0xFF.toByte() && pkt[1] == 0x01.toByte() && pkt[3] == 0x00.toByte() ->
+                    pkt.copyOfRange(4, pkt.size)
+                else -> null
+            }
+        }
 
         suspend fun swRecv(ms: Long = 10_000): ByteArray? =
             withTimeoutOrNull(ms) { pktCh.receive() }
@@ -718,12 +728,12 @@ class BridgeService : Service() {
             }
 
             gatt.disconnect()
-            withTimeoutOrNull(5_000) { done.await() }
+            runCatching { withTimeoutOrNull(5_000) { done.await() } }
             gatt.close()
             dives
         } catch (e: Exception) {
             runCatching { gatt.disconnect() }
-            withTimeoutOrNull(3_000) { done.await() }
+            runCatching { withTimeoutOrNull(3_000) { done.await() } }
             gatt.close()
             throw e
         }
