@@ -21,8 +21,10 @@ import android.annotation.SuppressLint
 import android.app.*
 import android.bluetooth.*
 import android.bluetooth.le.*
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.*
 import android.util.Log
 import java.io.BufferedReader
@@ -598,6 +600,33 @@ class BridgeService : Service() {
         val gatt = device.connectGatt(this, false, gattCb, BluetoothDevice.TRANSPORT_LE)
         val char = withTimeoutOrNull(15_000) { charRef.await() }
             ?: run { gatt.close(); throw Exception("Shearwater BLE setup timed out") }
+
+        // ── Bonding (required for download commands) ──────────────────────────
+        if (device.bondState != BluetoothDevice.BOND_BONDED) {
+            setState(state.get().copy(message = "Pairing with device — approve on phone…", progress = 38))
+            val bondDone = CompletableDeferred<Boolean>()
+            val bondReceiver = object : BroadcastReceiver() {
+                override fun onReceive(ctx: Context, intent: Intent) {
+                    if (intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)?.address != device.address) return
+                    when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)) {
+                        BluetoothDevice.BOND_BONDED  -> bondDone.complete(true)
+                        BluetoothDevice.BOND_NONE    -> bondDone.complete(false)
+                    }
+                }
+            }
+            registerReceiver(bondReceiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+            try {
+                device.createBond()
+                val bonded = withTimeoutOrNull(30_000) { bondDone.await() }
+                if (bonded != true) {
+                    gatt.disconnect(); gatt.close()
+                    throw Exception("Pairing failed — please try again and approve the pairing request")
+                }
+                delay(1_000) // brief settle after bond
+            } finally {
+                unregisterReceiver(bondReceiver)
+            }
+        }
 
         // ── Protocol helpers ─────────────────────────────────────────────────
         // Small delay between chunks avoids Android BLE TX-queue overflow
