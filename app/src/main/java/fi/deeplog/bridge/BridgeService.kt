@@ -573,13 +573,15 @@ class BridgeService : Service() {
             @Deprecated("Required for API < 33")
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
                 val data = characteristic.value
-                // Each BLE notification starts with 2-byte frame header [nChunks, chunkIdx] — skip it
-                if (data.size > 2) {
-                    slipBuf.addAll(data.drop(2))
-                    val decoded = mutableListOf<ByteArray>()
-                    slipDecode(slipBuf, decoded)
-                    decoded.forEach { pktCh.trySend(it) }
-                }
+                if (data.isEmpty()) return
+                // Log raw notification for protocol debugging
+                Log.d(TAG, "SW notify(${data.size}): ${data.take(6).map { "0x${it.toUByte().toString(16)}" }}")
+                // Feed all bytes to SLIP decoder. slipDecode ignores any bytes before the
+                // first 0xC0 marker, so 2-byte BLE frame headers (if present) are harmless.
+                slipBuf.addAll(data.toList())
+                val decoded = mutableListOf<ByteArray>()
+                slipDecode(slipBuf, decoded)
+                decoded.forEach { pktCh.trySend(it) }
             }
         }
 
