@@ -636,29 +636,23 @@ class BridgeService : Service() {
             val logPayload = logPkt?.let { swPayload(it) }
             Log.i(TAG, "SW logupload: ${logPayload?.map { "0x${it.toUByte().toString(16)}" }}")
 
-            var manifestAddr = 0xE0000000L
-            var numDives     = 64
-            var entrySize    = 128
-            if (logPayload != null && logPayload.size >= 12 && logPayload[0] == 0x62.toByte()) {
-                // Response: [0x62, 0x80, 0x21, nlogbooks, addr×4_BE, ndives×2_BE, entrySize×2_BE, ...]
-                //  [3]      = nlogbooks (skip)
-                //  [4..7]   = manifest address
-                //  [8..9]   = number of dives
-                //  [10..11] = bytes per entry
-                manifestAddr = ((logPayload[4].toLong() and 0xFF) shl 24) or
-                               ((logPayload[5].toLong() and 0xFF) shl 16) or
-                               ((logPayload[6].toLong() and 0xFF) shl 8)  or
-                               (logPayload[7].toLong() and 0xFF)
-                numDives  = ((logPayload[8].toInt()  and 0xFF) shl 8) or (logPayload[9].toInt()  and 0xFF)
-                entrySize = ((logPayload[10].toInt() and 0xFF) shl 8) or (logPayload[11].toInt() and 0xFF)
+            // logupload[4..7] = format indicator (not manifest address):
+            //   0x80000000 = New Petrel Native Format (Perdix/Petrel 2)
+            //   0xC0000000 = Predator-like format
+            // Manifest is ALWAYS at 0xE0000000 with fixed size 0x600
+            var formatAddr = 0xC0000000L
+            if (logPayload != null && logPayload.size >= 8 && logPayload[0] == 0x62.toByte()) {
+                formatAddr = ((logPayload[4].toLong() and 0xFF) shl 24) or
+                             ((logPayload[5].toLong() and 0xFF) shl 16) or
+                             ((logPayload[6].toLong() and 0xFF) shl 8)  or
+                             (logPayload[7].toLong() and 0xFF)
             }
-            numDives  = numDives.coerceIn(1, 256)
-            entrySize = entrySize.coerceIn(32, 512)
-            Log.i(TAG, "SW manifest: addr=0x${manifestAddr.toString(16)} numDives=$numDives entrySize=$entrySize")
+            Log.i(TAG, "SW logbook format indicator: 0x${formatAddr.toString(16)}")
 
             // ── 3. Download manifest ──────────────────────────────────────────
-            val ENTRY_SIZE   = entrySize
-            val manifestSize = numDives * ENTRY_SIZE
+            val ENTRY_SIZE   = 32
+            val manifestAddr = 0xE0000000L
+            val manifestSize = 0x600   // 1536 bytes = 48 × 32-byte entries
             setState(state.get().copy(message = "Downloading dive list ($numDives entries)…", progress = 50))
 
             fun Int.b3() = byteArrayOf(((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
@@ -690,23 +684,22 @@ class BridgeService : Service() {
             setState(state.get().copy(message = "Parsing dive manifest…", progress = 70))
 
             // ── 4. Parse manifest entries ─────────────────────────────────────
-            // 32-byte entry layout (Shearwater proprietary):
-            //  0..3  dive record address (BE)
-            //  4..7  dive record size (BE)
-            //  8     dive type / flags
-            //  9..11 date: year-2000, month, day
-            // 12..14 time: hour, minute, second
-            // 15..16 max depth cm (BE)
-            // 17..18 dive duration seconds (BE)
-            // 19..20 min temp ×10°C (BE signed)
+            // 32-byte Shearwater manifest entry (confirmed from libdivecomputer):
+            //  0..1  record header: 0xA5C4 = valid dive, 0x5A23 = deleted
+            //  4..7  fingerprint (ignored here)
+            // 20..23 dive data address (BE, relative to formatAddr base)
+            // Field offsets for date/depth/duration are determined from
+            // logged raw bytes — log all bytes of each valid entry.
             val dives = mutableListOf<DiveSummary>()
             var seq = 0
             var off = 0
             while (off + ENTRY_SIZE <= manifestData.size) {
                 val e = manifestData.subList(off, off + ENTRY_SIZE).toByteArray()
                 off += ENTRY_SIZE
-                if (e.all { it == 0xFF.toByte() } || e.all { it == 0x00.toByte() }) continue
-                Log.d(TAG, "SW entry@${off-ENTRY_SIZE}: ${e.map { "0x${it.toUByte().toString(16)}" }}")
+                val hdr = ((e[0].toInt() and 0xFF) shl 8) or (e[1].toInt() and 0xFF)
+                if (hdr != 0xA5C4) continue  // skip empty/deleted entries
+                // Log all bytes so we can determine field offsets
+                Log.i(TAG, "SW entry@${off-ENTRY_SIZE}: ${e.map { "0x${it.toUByte().toString(16)}" }}")
                 try {
                     val year  = (e[9].toInt()  and 0xFF) + 2000
                     val month = (e[10].toInt() and 0xFF)
@@ -719,7 +712,19 @@ class BridgeService : Service() {
                     val tempRaw = ((e[19].toInt() shl 8) or (e[20].toInt() and 0xFF)).toShort().toInt()
 
                     if (depthCm < 50 || durSec < 30 || year < 2010 || year > 2035 ||
-                        month !in 1..12 || day !in 1..31) continue
+                        month !in 1..12 || day !in 1..31) {
+                        Log.w(TAG, "SW entry@${off-ENTRY_SIZE}: field guesses invalid (depth=$depthCm dur=$durSec year=$year)")
+                        seq++
+                        dives.add(DiveSummary(
+                            source    = device.name ?: "Shearwater",
+                            number    = seq,
+                            divedAt   = "unknown",
+                            maxDepthM = 0.0,
+                            durationS = 0,
+                            tempC     = null
+                        ))
+                        continue
+                    }
 
                     seq++
                     dives.add(DiveSummary(
