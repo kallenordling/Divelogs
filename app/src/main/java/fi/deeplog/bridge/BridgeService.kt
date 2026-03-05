@@ -679,9 +679,9 @@ class BridgeService : Service() {
             Log.i(TAG, "SW logbook format indicator: 0x${formatAddr.toString(16)}")
 
             // ── 3. Download manifest ──────────────────────────────────────────
-            val ENTRY_SIZE   = 32
+            val ENTRY_SIZE   = 30     // Perdix V87 BLE blocks deliver 30 bytes per entry
             val manifestAddr = 0xE0000000L
-            val manifestSize = 0x600   // 1536 bytes = 48 × 32-byte entries
+            val manifestSize = 0x600   // 1536 bytes = 48 × 32-byte entries (stop early on NAK)
             setState(state.get().copy(message = "Downloading dive manifest…", progress = 50))
 
             fun Int.b3() = byteArrayOf(((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
@@ -713,12 +713,17 @@ class BridgeService : Service() {
             setState(state.get().copy(message = "Parsing dive manifest…", progress = 70))
 
             // ── 4. Parse manifest entries ─────────────────────────────────────
-            // 32-byte Shearwater manifest entry (confirmed from libdivecomputer):
-            //  0..1  record header: 0xA5C4 = valid dive, 0x5A23 = deleted
-            //  4..7  fingerprint (ignored here)
-            // 20..23 dive data address (BE, relative to formatAddr base)
-            // Field offsets for date/depth/duration are determined from
-            // logged raw bytes — log all bytes of each valid entry.
+            // 30-byte Perdix V87 manifest entry layout (decoded from logcat):
+            //  [0..1]   0xA5C4 = valid dive header
+            //  [2]      unknown
+            //  [3]      sequence byte (decreasing by 4 per entry, newest first)
+            //  [4..7]   dive START Unix timestamp, big-endian seconds
+            //  [8..11]  dive END   Unix timestamp, big-endian seconds
+            //  [12..19] unknown (possibly depth/temp/address fields)
+            //  [20..23] dive record flash address, big-endian
+            //  [24..29] unknown
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+                .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
             val dives = mutableListOf<DiveSummary>()
             var seq = 0
             var off = 0
@@ -726,45 +731,36 @@ class BridgeService : Service() {
                 val e = manifestData.subList(off, off + ENTRY_SIZE).toByteArray()
                 off += ENTRY_SIZE
                 val hdr = ((e[0].toInt() and 0xFF) shl 8) or (e[1].toInt() and 0xFF)
-                if (hdr != 0xA5C4) continue  // skip empty/deleted entries
-                // Log all bytes so we can determine field offsets
+                if (hdr != 0xA5C4) continue
                 Log.i(TAG, "SW entry@${off-ENTRY_SIZE}: ${e.map { "0x${it.toUByte().toString(16)}" }}")
                 try {
-                    val year  = (e[9].toInt()  and 0xFF) + 2000
-                    val month = (e[10].toInt() and 0xFF)
-                    val day   = (e[11].toInt() and 0xFF)
-                    val hour  = (e[12].toInt() and 0xFF)
-                    val min   = (e[13].toInt() and 0xFF)
-                    val sec   = (e[14].toInt() and 0xFF)
-                    val depthCm = ((e[15].toInt() and 0xFF) shl 8) or (e[16].toInt() and 0xFF)
-                    val durSec  = ((e[17].toInt() and 0xFF) shl 8) or (e[18].toInt() and 0xFF)
-                    val tempRaw = ((e[19].toInt() shl 8) or (e[20].toInt() and 0xFF)).toShort().toInt()
-
-                    if (depthCm < 50 || durSec < 30 || year < 2010 || year > 2035 ||
-                        month !in 1..12 || day !in 1..31) {
-                        Log.w(TAG, "SW entry@${off-ENTRY_SIZE}: field guesses invalid (depth=$depthCm dur=$durSec year=$year)")
-                        seq++
-                        dives.add(DiveSummary(
-                            source    = device.name ?: "Shearwater",
-                            number    = seq,
-                            divedAt   = "unknown",
-                            maxDepthM = 0.0,
-                            durationS = 0,
-                            tempC     = null
-                        ))
+                    val startTs = ((e[4].toLong() and 0xFF) shl 24) or
+                                  ((e[5].toLong() and 0xFF) shl 16) or
+                                  ((e[6].toLong() and 0xFF) shl 8)  or
+                                   (e[7].toLong() and 0xFF)
+                    val endTs   = ((e[8].toLong() and 0xFF) shl 24) or
+                                  ((e[9].toLong() and 0xFF) shl 16) or
+                                  ((e[10].toLong() and 0xFF) shl 8) or
+                                   (e[11].toLong() and 0xFF)
+                    val durSec  = (endTs - startTs).toInt().coerceIn(0, 86400)
+                    val year    = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
+                        .apply { time = java.util.Date(startTs * 1000L) }
+                        .get(java.util.Calendar.YEAR)
+                    if (startTs < 1_000_000_000L || year !in 2010..2035) {
+                        Log.w(TAG, "SW entry@${off-ENTRY_SIZE}: timestamp out of range ($startTs)")
                         continue
                     }
-
+                    val divedAt = sdf.format(java.util.Date(startTs * 1000L))
                     seq++
                     dives.add(DiveSummary(
                         source    = device.name ?: "Shearwater",
                         number    = seq,
-                        divedAt   = String.format(Locale.US, "%04d-%02d-%02dT%02d:%02d:%02dZ", year, month, day, hour, min, sec),
-                        maxDepthM = depthCm / 100.0,
+                        divedAt   = divedAt,
+                        maxDepthM = 0.0,   // requires individual dive download — TODO
                         durationS = durSec,
-                        tempC     = if (tempRaw in -50..500) tempRaw / 10.0 else null
+                        tempC     = null
                     ))
-                    Log.i(TAG, "SW dive $seq: $year-$month-$day ${depthCm/100.0}m ${durSec}s")
+                    Log.i(TAG, "SW dive $seq: $divedAt dur=${durSec}s")
                 } catch (ex: Exception) {
                     Log.w(TAG, "SW entry parse: ${ex.message}")
                 }
@@ -1420,8 +1416,12 @@ class BridgeService : Service() {
 
         conn.outputStream.use { it.write(body.toByteArray()) }
         val code = conn.responseCode
+        if (code !in 200..299) {
+            val err = runCatching { conn.errorStream?.bufferedReader()?.readText() }.getOrNull()
+            conn.disconnect()
+            throw Exception("Supabase HTTP $code: $err")
+        }
         conn.disconnect()
-        if (code !in 200..299) throw Exception("Supabase HTTP $code")
     }
 
     // ── State helpers ─────────────────────────────────────────────────────────
