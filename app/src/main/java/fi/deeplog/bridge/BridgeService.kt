@@ -293,7 +293,11 @@ class BridgeService : Service() {
             var uploaded = 0
             dives.forEachIndexed { i, dive ->
                 try {
-                    uploadDive(dive)
+                    val diveId = uploadDive(dive)
+                    if (diveId != null && dive.samples.isNotEmpty()) {
+                        runCatching { uploadSamples(diveId, dive) }
+                            .onFailure { Log.w(TAG, "Samples upload failed for dive ${i + 1}: ${it.message}") }
+                    }
                     uploaded++
                     setState(state.get().copy(
                         progress = 80 + 18 * (i + 1) / dives.size,
@@ -760,13 +764,18 @@ class BridgeService : Service() {
                         }
                         seq++
                         val divedAt = sdf.format(java.util.Date(startTs * 1000L))
+                        val recAddr = ((e[20].toLong() and 0xFF) shl 24) or
+                                      ((e[21].toLong() and 0xFF) shl 16) or
+                                      ((e[22].toLong() and 0xFF) shl 8)  or
+                                       (e[23].toLong() and 0xFF)
                         dives.add(DiveSummary(
-                            source    = device.name ?: "Shearwater",
-                            number    = seq,
-                            divedAt   = divedAt,
-                            maxDepthM = 0.0,   // TODO: individual dive download
-                            durationS = durSec,
-                            tempC     = null
+                            source     = device.name ?: "Shearwater",
+                            number     = seq,
+                            divedAt    = divedAt,
+                            maxDepthM  = 0.0,
+                            durationS  = durSec,
+                            tempC      = null,
+                            recordAddr = recAddr
                         ))
                         Log.i(TAG, "SW dive $seq: $divedAt dur=${durSec}s")
                         setState(state.get().copy(
@@ -782,10 +791,74 @@ class BridgeService : Service() {
                 if (entriesThisPage == 0) { Log.i(TAG, "SW manifest complete"); break }
             }
 
+            // ── 5. Download individual dive profiles ─────────────────────────
+            // Each manifest entry has a record address at bytes[20..23].
+            // Request that block and parse 32-byte samples:
+            //   [0..1]  depth uint16 BE / 10 → metres
+            //   [13]    temperature int8     → °C
+            // Sample interval: 10 s (Perdix default).
+            val PROF_SAMPLE_SIZE = 32
+            val PROF_HEADER_SIZE = 128
+            val PROF_INTERVAL_S  = 10
+
+            val divesFinal = dives.mapIndexed { idx, dive ->
+                val addr = dive.recordAddr
+                Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)}")
+                setState(state.get().copy(
+                    message  = "Downloading profile ${idx + 1}/${dives.size}…",
+                    progress = 70 + idx * 8 / dives.size.coerceAtLeast(1)
+                ))
+
+                val maxSz = (PROF_HEADER_SIZE +
+                    (dive.durationS / PROF_INTERVAL_S + 100) * PROF_SAMPLE_SIZE)
+                    .coerceIn(4096, 0x20000)
+
+                swSend(byteArrayOf(0x35, 0x00, 0x34) + addr.b4() + maxSz.b3())
+                val pInit = swRecv(8_000)
+                Log.i(TAG, "SW profile ${idx + 1} init: ${pInit?.take(8)?.map { "0x${it.toUByte().toString(16)}" }}")
+                if (pInit == null) return@mapIndexed dive
+
+                val profData = mutableListOf<Byte>()
+                var pBlock = 1
+                while (pBlock <= 4096) {
+                    swSend(byteArrayOf(0x36, (pBlock and 0xFF).toByte()))
+                    val pPkt = swRecv(15_000) ?: break
+                    val pPay = swPayload(pPkt)
+                    if (pPay != null && pPay.isNotEmpty() && pPay[0] == 0x76.toByte()) {
+                        profData.addAll(pPay.drop(2)); pBlock++
+                    } else break
+                }
+                swSend(byteArrayOf(0x37))
+                Log.i(TAG, "SW profile ${idx + 1}: ${profData.size} bytes, ${pBlock - 1} blocks")
+
+                if (profData.size < PROF_HEADER_SIZE + PROF_SAMPLE_SIZE) return@mapIndexed dive
+                Log.d(TAG, "SW rec hdr: ${profData.take(16).map { "0x${it.toUByte().toString(16)}" }}")
+
+                val samples = mutableListOf<DiveSample>()
+                var off = PROF_HEADER_SIZE
+                var t = 0
+                val maxT = dive.durationS + 120
+                while (off + PROF_SAMPLE_SIZE <= profData.size && t <= maxT) {
+                    val s = profData.subList(off, off + PROF_SAMPLE_SIZE).toByteArray()
+                    off += PROF_SAMPLE_SIZE
+                    val depthM = (((s[0].toInt() and 0xFF) shl 8) or (s[1].toInt() and 0xFF)) / 10.0
+                    val tempC  = s[13].toInt().toDouble()
+                    samples.add(DiveSample(t, depthM, tempC.takeIf { it in -5.0..50.0 }))
+                    t += PROF_INTERVAL_S
+                }
+                Log.i(TAG, "SW profile ${idx + 1}: ${samples.size} samples maxD=${samples.maxOfOrNull { it.depthM }?.let { "%.1f".format(it) }}m")
+
+                dive.copy(
+                    maxDepthM = samples.maxOfOrNull { it.depthM } ?: 0.0,
+                    tempC     = samples.mapNotNull { it.tempC }.minOrNull(),
+                    samples   = samples
+                )
+            }
+
             gatt.disconnect()
             runCatching { withTimeoutOrNull(5_000) { done.await() } }
             gatt.close()
-            dives
+            divesFinal
         } catch (e: Exception) {
             runCatching { gatt.disconnect() }
             runCatching { withTimeoutOrNull(3_000) { done.await() } }
@@ -1407,7 +1480,7 @@ class BridgeService : Service() {
 
     // ── Supabase upload ───────────────────────────────────────────────────────
 
-    private fun uploadDive(dive: DiveSummary) {
+    private fun uploadDive(dive: DiveSummary): String? {
         val prefs = getSharedPreferences("deeplog", android.content.Context.MODE_PRIVATE)
         val sbUrl = prefs.getString("supabase_url", SUPABASE_URL)?.trimEnd('/') ?: SUPABASE_URL
         val sbKey = prefs.getString("supabase_key", SUPABASE_KEY) ?: SUPABASE_KEY
@@ -1417,7 +1490,7 @@ class BridgeService : Service() {
         conn.setRequestProperty("apikey",        sbKey)
         conn.setRequestProperty("Authorization", "Bearer $sbKey")
         conn.setRequestProperty("Content-Type",  "application/json")
-        conn.setRequestProperty("Prefer",        "return=minimal")
+        conn.setRequestProperty("Prefer",        "return=representation")
         conn.doOutput = true
         conn.connectTimeout = 10_000
         conn.readTimeout    = 10_000
@@ -1440,7 +1513,48 @@ class BridgeService : Service() {
             conn.disconnect()
             throw Exception("Supabase HTTP $code: $err")
         }
+        val resp = conn.inputStream.bufferedReader().readText()
         conn.disconnect()
+        return runCatching { JSONArray(resp).getJSONObject(0).getString("id") }.getOrNull()
+    }
+
+    private fun uploadSamples(diveId: String, dive: DiveSummary) {
+        if (dive.samples.isEmpty()) return
+        val prefs = getSharedPreferences("deeplog", android.content.Context.MODE_PRIVATE)
+        val sbUrl = prefs.getString("supabase_url", SUPABASE_URL)?.trimEnd('/') ?: SUPABASE_URL
+        val sbKey = prefs.getString("supabase_key", SUPABASE_KEY) ?: SUPABASE_KEY
+        val url  = java.net.URL("$sbUrl/rest/v1/dive_samples")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("apikey",        sbKey)
+        conn.setRequestProperty("Authorization", "Bearer $sbKey")
+        conn.setRequestProperty("Content-Type",  "application/json")
+        conn.setRequestProperty("Prefer",        "return=minimal")
+        conn.doOutput = true
+        conn.connectTimeout = 15_000
+        conn.readTimeout    = 30_000
+
+        val arr = JSONArray()
+        dive.samples.forEach { s ->
+            arr.put(JSONObject().apply {
+                put("dive_id",  diveId)
+                put("username", username)
+                put("dived_at", dive.divedAt)
+                put("time_s",   s.timeS)
+                put("depth_m",  s.depthM)
+                if (s.tempC != null) put("temp_c", s.tempC)
+            })
+        }
+
+        conn.outputStream.use { it.write(arr.toString().toByteArray()) }
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            val err = runCatching { conn.errorStream?.bufferedReader()?.readText() }.getOrNull()
+            conn.disconnect()
+            throw Exception("Supabase samples HTTP $code: $err")
+        }
+        conn.disconnect()
+        Log.i(TAG, "Uploaded ${dive.samples.size} samples for dive ${dive.number}")
     }
 
     // ── State helpers ─────────────────────────────────────────────────────────
@@ -1497,15 +1611,23 @@ fun DiveComputerType.toBrandName(): String = when (this) {
     DiveComputerType.UNKNOWN       -> "Unknown"
 }
 
-// ── Data class ────────────────────────────────────────────────────────────────
+// ── Data classes ──────────────────────────────────────────────────────────────
+
+data class DiveSample(
+    val timeS:  Int,
+    val depthM: Double,
+    val tempC:  Double?
+)
 
 data class DiveSummary(
-    val source:    String,
-    val number:    Int,
-    val divedAt:   String?,
-    val maxDepthM: Double,
-    val durationS: Int,
-    val tempC:     Double?
+    val source:     String,
+    val number:     Int,
+    val divedAt:    String?,
+    val maxDepthM:  Double,
+    val durationS:  Int,
+    val tempC:      Double?,
+    val samples:    List<DiveSample> = emptyList(),
+    val recordAddr: Long             = 0L
 ) {
     fun summary(): Map<String, Any?> = mapOf(
         "source"      to source,
