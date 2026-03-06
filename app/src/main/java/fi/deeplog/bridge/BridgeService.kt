@@ -711,9 +711,22 @@ class BridgeService : Service() {
             Log.i(TAG, "SW manifest init: ${manifestInitAck?.take(8)?.map { "0x${it.toUByte().toString(16)}" }}")
             if (manifestInitAck == null) throw Exception("Manifest init timeout — put device in Bluetooth mode")
 
+            // Parse maxBlockLen from 0x75 response to know exactly how many blocks to
+            // request.  Sending one block beyond the last valid entry triggers a UDS
+            // requestSequenceError (NRC 0x24) which causes the Perdix to disconnect.
+            // Standard UDS: lengthFormatIdentifier bits[7:4] = #bytes for maxBlockLen.
+            val initPay = swPayload(manifestInitAck)
+            val maxBlockLen = if (initPay != null && initPay.size >= 3) {
+                val nLenBytes = (initPay[1].toInt() and 0xF0) shr 4
+                if (nLenBytes == 1 && initPay.size >= 3) (initPay[2].toInt() and 0xFF) else 128
+            } else 128
+            val maxDataPerBlock = (maxBlockLen - 2).coerceAtLeast(1)   // minus 0x76 + seqNum
+            val expectedBlocks  = (manifestSize + maxDataPerBlock - 1) / maxDataPerBlock
+            Log.i(TAG, "SW manifest: maxBlockLen=$maxBlockLen dataPerBlock=$maxDataPerBlock expectedBlocks=$expectedBlocks")
+
             val manifestData = mutableListOf<Byte>()
             var blockNum = 1
-            while (blockNum <= 512) {
+            while (blockNum <= expectedBlocks) {
                 swSend(byteArrayOf(0x36, (blockNum and 0xFF).toByte()))
                 val blkPkt = swRecv(15_000) ?: break
                 val blkPay = swPayload(blkPkt)
@@ -721,17 +734,15 @@ class BridgeService : Service() {
                     manifestData.addAll(blkPay.drop(2))
                     blockNum++
                 } else {
-                    Log.d(TAG, "SW manifest end at block $blockNum: ${blkPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
+                    Log.w(TAG, "SW manifest unexpected end at block $blockNum: ${blkPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
                     break
                 }
             }
-            // Close manifest UDS session.  Device signals end-of-data via NRC (not
-            // by simply stopping 0x76 replies), so we send 0x37 and give it 500 ms.
-            // The device may or may not respond with 0x77 — either way we continue.
+            // Close manifest UDS session cleanly — device should respond with 0x77.
             swSend(byteArrayOf(0x37))
-            swRecv(500)             // drain 0x77 (or NRC) — ignore content
-            delay(300)              // settling time before opening profile sessions
-            Log.i(TAG, "SW manifest: ${manifestData.size} bytes, ${blockNum - 1} blocks")
+            val quitResp = swRecv(3_000)
+            Log.i(TAG, "SW manifest quit resp: ${quitResp?.let { swPayload(it)?.take(2)?.map { b -> "0x${b.toUByte().toString(16)}" } }}")
+            Log.i(TAG, "SW manifest: ${manifestData.size} bytes, ${blockNum - 1} blocks  BLE=${if (done.isCompleted) "DISCONNECTED" else "ok"}")
 
             // Parse all entries from the flat manifest buffer
             var off = 0
@@ -788,6 +799,8 @@ class BridgeService : Service() {
             val PROF_SAMPLE_SIZE = 32
             val PROF_HEADER_SIZE = 128
             val PROF_INTERVAL_S  = 10
+
+            if (done.isCompleted) throw Exception("BLE disconnected after manifest — device may require reconnect")
 
             val divesFinal = dives.mapIndexed { idx, dive ->
                 // Final address = formatAddr (0x80000000 from logupload) + record offset from manifest
