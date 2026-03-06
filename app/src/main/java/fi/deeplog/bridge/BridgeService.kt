@@ -684,10 +684,10 @@ class BridgeService : Service() {
 
             // ── 3 & 4. Download manifest (single session) + parse entries ───────
             // libdivecomputer downloads the entire manifest in ONE 0x35 session.
-            // After the NAK signals end-of-data we close with 0x37, receive the
-            // 0x77 quit-ack, then proceed to individual dive profile downloads.
-            // Trying a second 0x35 at the same address (old "paging" approach) wastes
-            // 8 s waiting for a timeout and leaves the UDS channel in a dirty state.
+            // The device NAKs the next 0x36 after the last valid block, signalling
+            // end-of-data. We do NOT send 0x37 to close — on real hardware the device
+            // exits download mode immediately at the NAK and ignores the 0x37 anyway,
+            // causing a 3 s timeout before the first profile 0x35 can be sent.
             val ENTRY_SIZE   = 30       // Perdix V87: 30 bytes per BLE block = 1 entry
             val manifestAddr = 0xE0000000L
             val manifestSize = 0x600    // 1536 bytes — libdivecomputer constant
@@ -725,10 +725,6 @@ class BridgeService : Service() {
                     break
                 }
             }
-            // Close manifest UDS session — device responds with 0x77; drain it so it
-            // does not pollute the first profile's swRecv.
-            swSend(byteArrayOf(0x37))
-            swRecv(3_000)   // 0x77 quit-ack (ignore content)
             Log.i(TAG, "SW manifest: ${manifestData.size} bytes, ${blockNum - 1} blocks")
 
             // Parse all entries from the flat manifest buffer
@@ -821,9 +817,9 @@ class BridgeService : Service() {
                         profData.addAll(pPay.drop(2)); pBlock++
                     } else break
                 }
-                // Close profile UDS session; drain 0x77 quit-ack
+                // Close profile UDS session; 0x77 may or may not come (short wait)
                 swSend(byteArrayOf(0x37))
-                swRecv(3_000)
+                swRecv(500)
                 Log.i(TAG, "SW profile ${idx + 1}: ${profData.size} bytes, ${pBlock - 1} blocks")
 
                 if (profData.size < PROF_HEADER_SIZE + PROF_SAMPLE_SIZE) return@mapIndexed dive
