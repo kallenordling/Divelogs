@@ -725,6 +725,12 @@ class BridgeService : Service() {
                     break
                 }
             }
+            // Close manifest UDS session.  Device signals end-of-data via NRC (not
+            // by simply stopping 0x76 replies), so we send 0x37 and give it 500 ms.
+            // The device may or may not respond with 0x77 — either way we continue.
+            swSend(byteArrayOf(0x37))
+            swRecv(500)             // drain 0x77 (or NRC) — ignore content
+            delay(300)              // settling time before opening profile sessions
             Log.i(TAG, "SW manifest: ${manifestData.size} bytes, ${blockNum - 1} blocks")
 
             // Parse all entries from the flat manifest buffer
@@ -792,9 +798,9 @@ class BridgeService : Service() {
                     progress = 70 + idx * 8 / dives.size.coerceAtLeast(1)
                 ))
 
-                val maxSz = (PROF_HEADER_SIZE +
-                    (dive.durationS / PROF_INTERVAL_S + 100) * PROF_SAMPLE_SIZE)
-                    .coerceIn(4096, 0x20000)
+                // 0xFFFFFF = device terminates the session early when data exhausted
+                // (per libdivecomputer DIVE_SIZE constant — device sends NRC when done)
+                val maxSz = 0xFFFFFF
 
                 // 0x10 = LRE+XOR compression (required for dive profile data; manifest uses 0x00)
                 swSend(byteArrayOf(0x35, 0x10, 0x34) + addr.b4() + maxSz.b3())
