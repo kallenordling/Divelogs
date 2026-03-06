@@ -733,7 +733,10 @@ class BridgeService : Service() {
                         break
                     }
                 }
-                swSend(byteArrayOf(0x37)) // end session
+                // Do NOT send 0x37 here — the device exits BLE download mode on 0x37 and
+                // stops responding to subsequent 0x35 commands. The manifest session ends
+                // naturally when the device NAKs (no more data). Profile downloads follow
+                // immediately using the same connection.
                 Log.i(TAG, "SW manifest page $pageNum: ${pageData.size} bytes, $blockNum blocks")
 
                 // Parse entries from this page
@@ -802,8 +805,9 @@ class BridgeService : Service() {
             val PROF_INTERVAL_S  = 10
 
             val divesFinal = dives.mapIndexed { idx, dive ->
-                val addr = dive.recordAddr
-                Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)}")
+                // Final address = formatAddr (0x80000000 from logupload) + record offset from manifest
+                val addr = (formatAddr + dive.recordAddr) and 0xFFFFFFFFL
+                Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)} (base=0x${formatAddr.toString(16)} off=0x${dive.recordAddr.toString(16)})")
                 setState(state.get().copy(
                     message  = "Downloading profile ${idx + 1}/${dives.size}…",
                     progress = 70 + idx * 8 / dives.size.coerceAtLeast(1)
@@ -813,7 +817,8 @@ class BridgeService : Service() {
                     (dive.durationS / PROF_INTERVAL_S + 100) * PROF_SAMPLE_SIZE)
                     .coerceIn(4096, 0x20000)
 
-                swSend(byteArrayOf(0x35, 0x00, 0x34) + addr.b4() + maxSz.b3())
+                // 0x10 = LRE+XOR compression (required for dive profile data; manifest uses 0x00)
+                swSend(byteArrayOf(0x35, 0x10, 0x34) + addr.b4() + maxSz.b3())
                 val pInit = swRecv(8_000)
                 Log.i(TAG, "SW profile ${idx + 1} init: ${pInit?.take(8)?.map { "0x${it.toUByte().toString(16)}" }}")
                 if (pInit == null) return@mapIndexed dive
