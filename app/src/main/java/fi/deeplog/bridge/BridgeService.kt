@@ -728,6 +728,7 @@ class BridgeService : Service() {
             // 100+ dives. Request blocks until the device stops responding (2 s timeout).
             val manifestData = mutableListOf<Byte>()
             var blockNum = 1
+            var gotNrc24 = false   // device sent spontaneous NRC 0x24 to signal end-of-transfer
             while (blockNum <= 255) {   // block counter is 1 byte; 255 covers any real logbook
                 swSend(byteArrayOf(0x36, (blockNum and 0xFF).toByte()))
                 // Blocks arrive in <200 ms when they exist; 2 s is plenty — avoids a long
@@ -738,19 +739,33 @@ class BridgeService : Service() {
                     manifestData.addAll(blkPay.drop(2))
                     blockNum++
                 } else {
-                    Log.w(TAG, "SW manifest unexpected end at block $blockNum: ${blkPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
+                    // Detect spontaneous NRC 0x24 (requestSequenceError): device auto-closed
+                    // the UDS transfer session — do NOT send 0x37 afterward.
+                    if (blkPay != null && blkPay.size >= 3 &&
+                            blkPay[0] == 0x7f.toByte() && blkPay[2] == 0x24.toByte()) {
+                        gotNrc24 = true
+                        Log.i(TAG, "SW manifest: device signalled end-of-transfer (NRC 0x24) at block $blockNum")
+                    } else {
+                        Log.w(TAG, "SW manifest unexpected end at block $blockNum: ${blkPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
+                    }
                     break
                 }
             }
-            // Drain any stale NRC the device may have sent (e.g. requestOutOfRange for the
-            // block-beyond-last), then close the manifest UDS session.
-            swRecv(300)
-            swSend(byteArrayOf(0x37))
-            val quitResp = swRecv(5_000)
-            Log.i(TAG, "SW manifest quit resp: ${quitResp?.let { swPayload(it)?.take(2)?.map { b -> "0x${b.toUByte().toString(16)}" } }}")
+            if (!gotNrc24) {
+                // Normal path: device did not auto-close; drain any stale NRC then close explicitly.
+                swRecv(300)
+                swSend(byteArrayOf(0x37))
+                val quitResp = swRecv(5_000)
+                Log.i(TAG, "SW manifest quit resp: ${quitResp?.let { swPayload(it)?.take(2)?.map { b -> "0x${b.toUByte().toString(16)}" } }}")
+                delay(400)
+            } else {
+                // Device already closed UDS session with NRC 0x24; drain any spontaneous 0x77,
+                // then give it extra time to fully reset its state machine.
+                val spont = swRecv(600)
+                Log.i(TAG, "SW manifest post-NRC drain: ${spont?.let { swPayload(it)?.take(2)?.map { b -> "0x${b.toUByte().toString(16)}" } }}")
+                delay(1_000)
+            }
             Log.i(TAG, "SW manifest: ${manifestData.size} bytes, ${blockNum - 1} blocks  BLE=${if (done.isCompleted) "DISCONNECTED" else "ok"}")
-            // Give the device a moment to settle before opening the next UDS session.
-            delay(400)
 
             // Parse all entries from the flat manifest buffer
             var off = 0
