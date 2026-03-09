@@ -721,12 +721,14 @@ class BridgeService : Service() {
                 if (nLenBytes == 1 && initPay.size >= 3) (initPay[2].toInt() and 0xFF) else 128
             } else 128
             val maxDataPerBlock = (maxBlockLen - 2).coerceAtLeast(1)   // minus 0x76 + seqNum
-            val expectedBlocks  = (manifestSize + maxDataPerBlock - 1) / maxDataPerBlock
-            Log.i(TAG, "SW manifest: maxBlockLen=$maxBlockLen dataPerBlock=$maxDataPerBlock expectedBlocks=$expectedBlocks")
+            Log.i(TAG, "SW manifest: maxBlockLen=$maxBlockLen dataPerBlock=$maxDataPerBlock")
 
+            // Don't cap by a calculated expectedBlocks — the Perdix sends one 30-byte entry
+            // per block regardless of maxBlockLen, so the formula gives 12 when there may be
+            // 100+ dives. Request blocks until the device stops responding (2 s timeout).
             val manifestData = mutableListOf<Byte>()
             var blockNum = 1
-            while (blockNum <= expectedBlocks) {
+            while (blockNum <= 255) {   // block counter is 1 byte; 255 covers any real logbook
                 swSend(byteArrayOf(0x36, (blockNum and 0xFF).toByte()))
                 // Blocks arrive in <200 ms when they exist; 2 s is plenty — avoids a long
                 // idle that causes the Perdix to drop its diagnostic session.
@@ -808,16 +810,20 @@ class BridgeService : Service() {
 
             if (done.isCompleted) throw Exception("BLE disconnected after manifest — device may require reconnect")
 
+            // Profile data lives at 0xC0000000 in the Shearwater address space.
+            // formatAddr (0x80000000) is the log FORMAT indicator, not the profile base.
+            // Manifest is hardcoded to 0xE0000000; profiles are hardcoded to 0xC0000000.
+            val profileBase = 0xC0000000L
+
             val divesFinal = dives.mapIndexed { idx, dive ->
-                // Profile memory base = formatAddr (0x80000000 for new Perdix format).
                 // recAddr values with high bits set are ring-buffer wrap-around artefacts
-                // from the manifest and don't map to valid flash addresses — skip them.
+                // that don't map to valid flash addresses — skip them.
                 if (dive.recordAddr >= 0x10000000L) {
                     Log.w(TAG, "SW profile ${idx + 1}: recAddr=0x${dive.recordAddr.toString(16)} out of range, skipping")
                     return@mapIndexed dive
                 }
-                val addr = (formatAddr + dive.recordAddr) and 0xFFFFFFFFL
-                Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)} (base=0x${formatAddr.toString(16)} off=0x${dive.recordAddr.toString(16)})")
+                val addr = (profileBase + dive.recordAddr) and 0xFFFFFFFFL
+                Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)} (base=0xC0000000 off=0x${dive.recordAddr.toString(16)})")
                 setState(state.get().copy(
                     message  = "Downloading profile ${idx + 1}/${dives.size}…",
                     progress = 70 + idx * 8 / dives.size.coerceAtLeast(1)
