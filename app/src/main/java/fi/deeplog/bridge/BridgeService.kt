@@ -728,7 +728,9 @@ class BridgeService : Service() {
             var blockNum = 1
             while (blockNum <= expectedBlocks) {
                 swSend(byteArrayOf(0x36, (blockNum and 0xFF).toByte()))
-                val blkPkt = swRecv(15_000) ?: break
+                // Blocks arrive in <200 ms when they exist; 2 s is plenty — avoids a long
+                // idle that causes the Perdix to drop its diagnostic session.
+                val blkPkt = swRecv(2_000) ?: break
                 val blkPay = swPayload(blkPkt)
                 if (blkPay != null && blkPay.isNotEmpty() && blkPay[0] == 0x76.toByte()) {
                     manifestData.addAll(blkPay.drop(2))
@@ -738,11 +740,15 @@ class BridgeService : Service() {
                     break
                 }
             }
-            // Close manifest UDS session cleanly — device should respond with 0x77.
+            // Drain any stale NRC the device may have sent (e.g. requestOutOfRange for the
+            // block-beyond-last), then close the manifest UDS session.
+            swRecv(300)
             swSend(byteArrayOf(0x37))
-            val quitResp = swRecv(3_000)
+            val quitResp = swRecv(5_000)
             Log.i(TAG, "SW manifest quit resp: ${quitResp?.let { swPayload(it)?.take(2)?.map { b -> "0x${b.toUByte().toString(16)}" } }}")
             Log.i(TAG, "SW manifest: ${manifestData.size} bytes, ${blockNum - 1} blocks  BLE=${if (done.isCompleted) "DISCONNECTED" else "ok"}")
+            // Give the device a moment to settle before opening the next UDS session.
+            delay(400)
 
             // Parse all entries from the flat manifest buffer
             var off = 0
@@ -831,15 +837,16 @@ class BridgeService : Service() {
                 var pBlock = 1
                 while (pBlock <= 4096) {
                     swSend(byteArrayOf(0x36, (pBlock and 0xFF).toByte()))
-                    val pPkt = swRecv(15_000) ?: break
+                    val pPkt = swRecv(5_000) ?: break
                     val pPay = swPayload(pPkt)
                     if (pPay != null && pPay.isNotEmpty() && pPay[0] == 0x76.toByte()) {
                         profData.addAll(pPay.drop(2)); pBlock++
                     } else break
                 }
-                // Close profile UDS session; 0x77 may or may not come (short wait)
+                // Close profile UDS session; drain any stale packet then wait for 0x77.
+                swRecv(300)
                 swSend(byteArrayOf(0x37))
-                swRecv(500)
+                swRecv(3_000)
                 Log.i(TAG, "SW profile ${idx + 1}: ${profData.size} bytes, ${pBlock - 1} blocks")
 
                 if (profData.size < PROF_HEADER_SIZE + PROF_SAMPLE_SIZE) {
