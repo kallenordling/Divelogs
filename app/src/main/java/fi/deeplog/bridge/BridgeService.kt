@@ -809,7 +809,13 @@ class BridgeService : Service() {
             if (done.isCompleted) throw Exception("BLE disconnected after manifest — device may require reconnect")
 
             val divesFinal = dives.mapIndexed { idx, dive ->
-                // Final address = formatAddr (0x80000000 from logupload) + record offset from manifest
+                // Profile memory base = formatAddr (0x80000000 for new Perdix format).
+                // recAddr values with high bits set are ring-buffer wrap-around artefacts
+                // from the manifest and don't map to valid flash addresses — skip them.
+                if (dive.recordAddr >= 0x10000000L) {
+                    Log.w(TAG, "SW profile ${idx + 1}: recAddr=0x${dive.recordAddr.toString(16)} out of range, skipping")
+                    return@mapIndexed dive
+                }
                 val addr = (formatAddr + dive.recordAddr) and 0xFFFFFFFFL
                 Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)} (base=0x${formatAddr.toString(16)} off=0x${dive.recordAddr.toString(16)})")
                 setState(state.get().copy(
@@ -817,9 +823,10 @@ class BridgeService : Service() {
                     progress = 70 + idx * 8 / dives.size.coerceAtLeast(1)
                 ))
 
-                // 0xFFFFFF = device terminates the session early when data exhausted
-                // (per libdivecomputer DIVE_SIZE constant — device sends NRC when done)
-                val maxSz = 0xFFFFFF
+                // 256 KB — generous enough for any dive profile yet small enough that
+                // address + maxSz stays within the Perdix profile flash region.
+                // (0xFFFFFF / 16 MB caused NRC 0x31 on every address.)
+                val maxSz = 0x040000
 
                 // 0x00 = no compression; Perdix/new-format (0x80000000) stores profiles raw.
                 // (Older Predator/Petrel-1 used 0x10 LRE+XOR, but that causes NRC 0x31 here.)
