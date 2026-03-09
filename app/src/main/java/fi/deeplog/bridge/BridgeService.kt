@@ -721,30 +721,28 @@ class BridgeService : Service() {
                 if (nLenBytes == 1 && initPay.size >= 3) (initPay[2].toInt() and 0xFF) else 128
             } else 128
             val maxDataPerBlock = (maxBlockLen - 2).coerceAtLeast(1)   // minus 0x76 + seqNum
-            Log.i(TAG, "SW manifest: maxBlockLen=$maxBlockLen dataPerBlock=$maxDataPerBlock")
+            // The Perdix sends one 30-byte entry per block. Requesting a block beyond the last
+            // valid entry triggers NRC 0x24, which locks the device UDS state for the session —
+            // no subsequent 0x35 will be accepted.  Cap at ceil(manifestSize/maxDataPerBlock)
+            // so we never send an out-of-bounds request.
+            val expectedBlocks = (manifestSize + maxDataPerBlock - 1) / maxDataPerBlock
+            Log.i(TAG, "SW manifest: maxBlockLen=$maxBlockLen maxDataPerBlock=$maxDataPerBlock expectedBlocks=$expectedBlocks")
 
-            // Don't cap by a calculated expectedBlocks — the Perdix sends one 30-byte entry
-            // per block regardless of maxBlockLen, so the formula gives 12 when there may be
-            // 100+ dives. Request blocks until the device stops responding (2 s timeout).
             val manifestData = mutableListOf<Byte>()
             var blockNum = 1
-            var gotNrc24 = false   // device sent spontaneous NRC 0x24 to signal end-of-transfer
-            while (blockNum <= 255) {   // block counter is 1 byte; 255 covers any real logbook
+            var gotNrc24 = false   // device sent NRC 0x24 (out-of-bounds block request)
+            while (blockNum <= expectedBlocks) {
                 swSend(byteArrayOf(0x36, (blockNum and 0xFF).toByte()))
-                // Blocks arrive in <200 ms when they exist; 2 s is plenty — avoids a long
-                // idle that causes the Perdix to drop its diagnostic session.
                 val blkPkt = swRecv(2_000) ?: break
                 val blkPay = swPayload(blkPkt)
                 if (blkPay != null && blkPay.isNotEmpty() && blkPay[0] == 0x76.toByte()) {
                     manifestData.addAll(blkPay.drop(2))
                     blockNum++
                 } else {
-                    // Detect spontaneous NRC 0x24 (requestSequenceError): device auto-closed
-                    // the UDS transfer session — do NOT send 0x37 afterward.
                     if (blkPay != null && blkPay.size >= 3 &&
                             blkPay[0] == 0x7f.toByte() && blkPay[2] == 0x24.toByte()) {
                         gotNrc24 = true
-                        Log.i(TAG, "SW manifest: device signalled end-of-transfer (NRC 0x24) at block $blockNum")
+                        Log.i(TAG, "SW manifest: NRC 0x24 at block $blockNum (device has fewer entries than cap)")
                     } else {
                         Log.w(TAG, "SW manifest unexpected end at block $blockNum: ${blkPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
                     }
@@ -752,18 +750,19 @@ class BridgeService : Service() {
                 }
             }
             if (!gotNrc24) {
-                // Normal path: device did not auto-close; drain any stale NRC then close explicitly.
+                // Clean close: all requested blocks received (or device timed out) — send 0x37.
                 swRecv(300)
                 swSend(byteArrayOf(0x37))
                 val quitResp = swRecv(5_000)
                 Log.i(TAG, "SW manifest quit resp: ${quitResp?.let { swPayload(it)?.take(2)?.map { b -> "0x${b.toUByte().toString(16)}" } }}")
                 delay(400)
             } else {
-                // Device already closed UDS session with NRC 0x24; drain any spontaneous 0x77,
-                // then give it extra time to fully reset its state machine.
-                val spont = swRecv(600)
-                Log.i(TAG, "SW manifest post-NRC drain: ${spont?.let { swPayload(it)?.take(2)?.map { b -> "0x${b.toUByte().toString(16)}" } }}")
-                delay(1_000)
+                // NRC 0x24 received: device locked its UDS state.  Send 0x37 immediately
+                // (no drain) — tight-window attempt to close the session cleanly.
+                swSend(byteArrayOf(0x37))
+                val quitResp = swRecv(1_000)
+                Log.i(TAG, "SW manifest NRC-path quit resp: ${quitResp?.let { swPayload(it)?.take(2)?.map { b -> "0x${b.toUByte().toString(16)}" } }}")
+                delay(1_500)
             }
             Log.i(TAG, "SW manifest: ${manifestData.size} bytes, ${blockNum - 1} blocks  BLE=${if (done.isCompleted) "DISCONNECTED" else "ok"}")
 
