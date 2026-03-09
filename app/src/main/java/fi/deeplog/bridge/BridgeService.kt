@@ -669,10 +669,10 @@ class BridgeService : Service() {
             val logPayload = logPkt?.let { swPayload(it) }
             Log.i(TAG, "SW logupload: ${logPayload?.map { "0x${it.toUByte().toString(16)}" }}")
 
-            // logupload[4..7] = format indicator (not manifest address):
-            //   0x80000000 = New Petrel Native Format (Perdix/Petrel 2)
-            //   0xC0000000 = Predator-like format
-            // Manifest is ALWAYS at 0xE0000000 with fixed size 0x600
+            // logupload[4..7] = profile region base address (doubles as format indicator):
+            //   0x80000000 = Perdix / Petrel 2 (new native format); manifest at 0xE0000000
+            //   0xC0000000 = Predator / Petrel 1 (old format);      manifest at 0x80000000
+            // Manifest for new format is ALWAYS at 0xE0000000 with fixed size 0x600
             var formatAddr = 0xC0000000L
             if (logPayload != null && logPayload.size >= 8 && logPayload[0] == 0x62.toByte()) {
                 formatAddr = ((logPayload[4].toLong() and 0xFF) shl 24) or
@@ -824,18 +824,19 @@ class BridgeService : Service() {
 
             if (done.isCompleted) throw Exception("BLE disconnected after manifest — device may require reconnect")
 
-            // For Perdix (new Petrel native format), the recAddr stored in each manifest
-            // entry IS the absolute UDS virtual address of the profile data — no base offset
-            // is added.  (0xC0000000 was wrong: the device rejects it with NRC 0x31.)
-            // Filter entries whose recAddr falls in the manifest region (0xE0000000+) or
-            // other obviously invalid high regions (>= 0x10000000 catches SLIP artefacts too).
+            // The logupload response byte[4..7] (formatAddr) doubles as the profile region
+            // base address.  For this Perdix "V87 Classic" it is 0x80000000.  Manifest
+            // entries store byte offsets from that base.
+            //   addr = formatAddr + recAddr
+            // Entries with recAddr >= 0x10000000 are already in a high-address region
+            // (manifest range 0xE0000000, or SLIP artefacts like 0xDC882B00) — skip them.
             val divesFinal = dives.mapIndexed { idx, dive ->
                 if (dive.recordAddr >= 0x10000000L) {
                     Log.w(TAG, "SW profile ${idx + 1}: recAddr=0x${dive.recordAddr.toString(16)} high-addr, skipping")
                     return@mapIndexed dive
                 }
-                val addr = dive.recordAddr
-                Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)}")
+                val addr = (formatAddr + dive.recordAddr) and 0xFFFFFFFFL
+                Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)} (base=0x${formatAddr.toString(16)} off=0x${dive.recordAddr.toString(16)})")
                 setState(state.get().copy(
                     message  = "Downloading profile ${idx + 1}/${dives.size}…",
                     progress = 70 + idx * 8 / dives.size.coerceAtLeast(1)
