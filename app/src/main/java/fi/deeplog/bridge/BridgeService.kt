@@ -824,20 +824,18 @@ class BridgeService : Service() {
 
             if (done.isCompleted) throw Exception("BLE disconnected after manifest — device may require reconnect")
 
-            // Profile data lives at 0xC0000000 in the Shearwater address space.
-            // formatAddr (0x80000000) is the log FORMAT indicator, not the profile base.
-            // Manifest is hardcoded to 0xE0000000; profiles are hardcoded to 0xC0000000.
-            val profileBase = 0xC0000000L
-
+            // For Perdix (new Petrel native format), the recAddr stored in each manifest
+            // entry IS the absolute UDS virtual address of the profile data — no base offset
+            // is added.  (0xC0000000 was wrong: the device rejects it with NRC 0x31.)
+            // Filter entries whose recAddr falls in the manifest region (0xE0000000+) or
+            // other obviously invalid high regions (>= 0x10000000 catches SLIP artefacts too).
             val divesFinal = dives.mapIndexed { idx, dive ->
-                // recAddr values with high bits set are ring-buffer wrap-around artefacts
-                // that don't map to valid flash addresses — skip them.
                 if (dive.recordAddr >= 0x10000000L) {
-                    Log.w(TAG, "SW profile ${idx + 1}: recAddr=0x${dive.recordAddr.toString(16)} out of range, skipping")
+                    Log.w(TAG, "SW profile ${idx + 1}: recAddr=0x${dive.recordAddr.toString(16)} high-addr, skipping")
                     return@mapIndexed dive
                 }
-                val addr = (profileBase + dive.recordAddr) and 0xFFFFFFFFL
-                Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)} (base=0xC0000000 off=0x${dive.recordAddr.toString(16)})")
+                val addr = dive.recordAddr
+                Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)}")
                 setState(state.get().copy(
                     message  = "Downloading profile ${idx + 1}/${dives.size}…",
                     progress = 70 + idx * 8 / dives.size.coerceAtLeast(1)
