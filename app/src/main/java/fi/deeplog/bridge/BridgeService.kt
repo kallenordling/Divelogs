@@ -815,8 +815,9 @@ class BridgeService : Service() {
                 // (per libdivecomputer DIVE_SIZE constant — device sends NRC when done)
                 val maxSz = 0xFFFFFF
 
-                // 0x10 = LRE+XOR compression (required for dive profile data; manifest uses 0x00)
-                swSend(byteArrayOf(0x35, 0x10, 0x34) + addr.b4() + maxSz.b3())
+                // 0x00 = no compression; Perdix/new-format (0x80000000) stores profiles raw.
+                // (Older Predator/Petrel-1 used 0x10 LRE+XOR, but that causes NRC 0x31 here.)
+                swSend(byteArrayOf(0x35, 0x00, 0x34) + addr.b4() + maxSz.b3())
                 val pInit = swRecv(8_000)
                 val pInitPay = pInit?.let { swPayload(it) }
                 Log.i(TAG, "SW profile ${idx + 1} init: ${pInitPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
@@ -841,8 +842,12 @@ class BridgeService : Service() {
                 swRecv(500)
                 Log.i(TAG, "SW profile ${idx + 1}: ${profData.size} bytes, ${pBlock - 1} blocks")
 
-                if (profData.size < PROF_HEADER_SIZE + PROF_SAMPLE_SIZE) return@mapIndexed dive
-                Log.d(TAG, "SW rec hdr: ${profData.take(16).map { "0x${it.toUByte().toString(16)}" }}")
+                if (profData.size < PROF_HEADER_SIZE + PROF_SAMPLE_SIZE) {
+                    Log.w(TAG, "SW profile ${idx + 1}: too small (${profData.size} bytes), hdr: ${profData.take(32).map { "0x${it.toUByte().toString(16)}" }}")
+                    return@mapIndexed dive
+                }
+                Log.d(TAG, "SW rec hdr[0..63]: ${profData.take(64).map { "0x${it.toUByte().toString(16)}" }}")
+                Log.d(TAG, "SW rec sample@128: ${profData.drop(PROF_HEADER_SIZE).take(PROF_SAMPLE_SIZE).map { "0x${it.toUByte().toString(16)}" }}")
 
                 val samples = mutableListOf<DiveSample>()
                 var off = PROF_HEADER_SIZE
