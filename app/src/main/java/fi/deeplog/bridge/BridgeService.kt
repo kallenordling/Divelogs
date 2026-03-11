@@ -655,6 +655,86 @@ class BridgeService : Service() {
         suspend fun swRecv(ms: Long = 10_000): ByteArray? =
             withTimeoutOrNull(ms) { pktCh.receive() }
 
+        // Byte-packing helpers used by swDownload and the manifest/profile sends.
+        fun Int.b3() = byteArrayOf(((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
+        fun Long.b4() = byteArrayOf(((this shr 24) and 0xFF).toByte(), ((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
+
+        // ── Decompression (shearwater_common_decompress_lre / _xor) ──────────
+        // LRE: data is a stream of 9-bit values.
+        //   bit8 set   → raw byte (bits 0-7 appended as-is)
+        //   bit8 clear, value > 0 → run of `value` zero bytes
+        //   value == 0 → end of stream
+        fun decompressLRE(data: ByteArray): ByteArray? {
+            val nbits = data.size * 8
+            if (nbits % 9 != 0) return null
+            val result = mutableListOf<Byte>()
+            var offset = 0
+            while (offset + 9 <= nbits) {
+                val byteIdx = offset / 8
+                val bitIdx  = offset % 8
+                val shift   = 16 - (bitIdx + 9)
+                val b0 = if (byteIdx < data.size)         (data[byteIdx].toInt()       and 0xFF) else 0
+                val b1 = if (byteIdx + 1 < data.size)     (data[byteIdx + 1].toInt()   and 0xFF) else 0
+                val value = ((b0 shl 8) or b1) ushr shift and 0x1FF
+                when {
+                    value and 0x100 != 0 -> result.add((value and 0xFF).toByte())
+                    value == 0           -> break  // end of compressed stream
+                    else                 -> repeat(value) { result.add(0) }
+                }
+                offset += 9
+            }
+            return result.toByteArray()
+        }
+
+        // XOR: each 32-byte block XOR'd in-place with the previous block.
+        fun decompressXOR(data: ByteArray) {
+            for (i in 32 until data.size) {
+                data[i] = (data[i].toInt() xor data[i - 32].toInt()).toByte()
+            }
+        }
+
+        // ── swDownload — mirrors shearwater_common_download ──────────────────
+        // Sends RequestUpload (0x35), fetches blocks (0x36), closes (0x37).
+        // When useCompression=true the raw response is LRE-decompressed then XOR-expanded.
+        suspend fun swDownload(address: Long, maxSize: Int, useCompression: Boolean): ByteArray? {
+            val compFlag = if (useCompression) 0x10.toByte() else 0x00.toByte()
+            swSend(byteArrayOf(0x35, compFlag, 0x34) + address.b4() + maxSize.b3())
+            val initPkt = swRecv(8_000) ?: return null
+            val initPay = swPayload(initPkt) ?: return null
+            // 0x75 = positive response to RequestUpload
+            if (initPay.isEmpty() || initPay[0] != 0x75.toByte()) {
+                Log.w(TAG, "SW swDownload init failed: ${initPay.take(4).map { "0x${it.toUByte().toString(16)}" }}")
+                return null
+            }
+
+            val rawData = mutableListOf<Byte>()
+            var block = 1
+            while (rawData.size < maxSize) {
+                swSend(byteArrayOf(0x36, (block and 0xFF).toByte()))
+                val pkt = swRecv(5_000) ?: break
+                val pay = swPayload(pkt) ?: break
+                // 0x76 = TransferData response; byte[1] is the echoed block sequence number
+                if (pay.size < 2 || pay[0] != 0x76.toByte() || pay[1] != (block and 0xFF).toByte()) break
+                rawData.addAll(pay.drop(2))
+                block++
+            }
+
+            // Close UDS session: drain any stale packet, then send RequestTransferExit (0x37)
+            swRecv(300)
+            swSend(byteArrayOf(0x37))
+            swRecv(3_000)
+
+            val raw = rawData.toByteArray()
+            if (!useCompression) return raw
+            // Apply LRE then XOR decompression (shearwater_common_decompress_lre/xor)
+            val lre = decompressLRE(raw) ?: run {
+                Log.w(TAG, "SW LRE decompression failed (${raw.size} bytes)")
+                return null
+            }
+            decompressXOR(lre)
+            return lre
+        }
+
         return try {
             // ── 1. Firmware version ───────────────────────────────────────────
             setState(state.get().copy(message = "Reading firmware version…", progress = 40))
@@ -691,9 +771,6 @@ class BridgeService : Service() {
             val ENTRY_SIZE   = 30       // Perdix V87: 30 bytes per BLE block = 1 entry
             val manifestAddr = 0xE0000000L
             val manifestSize = 0x600    // 1536 bytes — libdivecomputer constant
-
-            fun Int.b3() = byteArrayOf(((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
-            fun Long.b4() = byteArrayOf(((this shr 24) and 0xFF).toByte(), ((this shr 16) and 0xFF).toByte(), ((this shr 8) and 0xFF).toByte(), (this and 0xFF).toByte())
 
             // Entry layout (30 bytes over BLE, 32 bytes on flash — last 2 stripped):
             //  [0..1]   0xA5C4 = valid, 0x5A23 = deleted
@@ -861,47 +938,25 @@ class BridgeService : Service() {
                 // (0xFFFFFF / 16 MB caused NRC 0x31 on every address.)
                 val maxSz = 0x040000
 
-                // 0x00 = no compression; Perdix/new-format (0x80000000) stores profiles raw.
-                // (Older Predator/Petrel-1 used 0x10 LRE+XOR, but that causes NRC 0x31 here.)
-                swSend(byteArrayOf(0x35, 0x00, 0x34) + addr.b4() + maxSz.b3())
-                val pInit = swRecv(8_000)
-                val pInitPay = pInit?.let { swPayload(it) }
-                Log.i(TAG, "SW profile ${idx + 1} init: ${pInitPay?.take(4)?.map { "0x${it.toUByte().toString(16)}" }}")
-                // Expect 0x75 = positive response to RequestUpload (0x35)
-                if (pInitPay == null || pInitPay[0] != 0x75.toByte()) {
-                    Log.w(TAG, "SW profile ${idx + 1}: bad init response, skipping")
+                // Perdix/new-format (0x80000000) stores profiles uncompressed (0x00).
+                // Old-format Predator/Petrel-1 (0xC0000000) uses LRE+XOR compression (0x10).
+                val useComp = formatAddr == 0xC0000000L
+                val profBytes = swDownload(addr, maxSz, useComp)
+                Log.i(TAG, "SW profile ${idx + 1}: ${profBytes?.size ?: 0} bytes (comp=$useComp)")
+
+                if (profBytes == null || profBytes.size < PROF_HEADER_SIZE + PROF_SAMPLE_SIZE) {
+                    Log.w(TAG, "SW profile ${idx + 1}: too small or null (${profBytes?.size} bytes)")
                     return@mapIndexed dive
                 }
-
-                val profData = mutableListOf<Byte>()
-                var pBlock = 1
-                while (pBlock <= 4096) {
-                    swSend(byteArrayOf(0x36, (pBlock and 0xFF).toByte()))
-                    val pPkt = swRecv(5_000) ?: break
-                    val pPay = swPayload(pPkt)
-                    if (pPay != null && pPay.isNotEmpty() && pPay[0] == 0x76.toByte()) {
-                        profData.addAll(pPay.drop(2)); pBlock++
-                    } else break
-                }
-                // Close profile UDS session; drain any stale packet then wait for 0x77.
-                swRecv(300)
-                swSend(byteArrayOf(0x37))
-                swRecv(3_000)
-                Log.i(TAG, "SW profile ${idx + 1}: ${profData.size} bytes, ${pBlock - 1} blocks")
-
-                if (profData.size < PROF_HEADER_SIZE + PROF_SAMPLE_SIZE) {
-                    Log.w(TAG, "SW profile ${idx + 1}: too small (${profData.size} bytes), hdr: ${profData.take(32).map { "0x${it.toUByte().toString(16)}" }}")
-                    return@mapIndexed dive
-                }
-                Log.d(TAG, "SW rec hdr[0..63]: ${profData.take(64).map { "0x${it.toUByte().toString(16)}" }}")
-                Log.d(TAG, "SW rec sample@128: ${profData.drop(PROF_HEADER_SIZE).take(PROF_SAMPLE_SIZE).map { "0x${it.toUByte().toString(16)}" }}")
+                Log.d(TAG, "SW rec hdr[0..63]: ${profBytes.take(64).map { "0x${it.toUByte().toString(16)}" }}")
+                Log.d(TAG, "SW rec sample@128: ${profBytes.drop(PROF_HEADER_SIZE).take(PROF_SAMPLE_SIZE).map { "0x${it.toUByte().toString(16)}" }}")
 
                 val samples = mutableListOf<DiveSample>()
                 var off = PROF_HEADER_SIZE
                 var t = 0
                 val maxT = dive.durationS + 120
-                while (off + PROF_SAMPLE_SIZE <= profData.size && t <= maxT) {
-                    val s = profData.subList(off, off + PROF_SAMPLE_SIZE).toByteArray()
+                while (off + PROF_SAMPLE_SIZE <= profBytes.size && t <= maxT) {
+                    val s = profBytes.copyOfRange(off, off + PROF_SAMPLE_SIZE)
                     off += PROF_SAMPLE_SIZE
                     val depthM = (((s[0].toInt() and 0xFF) shl 8) or (s[1].toInt() and 0xFF)) / 10.0
                     val tempC  = s[13].toInt().toDouble()
