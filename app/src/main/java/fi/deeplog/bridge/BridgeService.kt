@@ -513,6 +513,7 @@ class BridgeService : Service() {
         var txChar: BluetoothGattCharacteristic? = null
         val setupDone = CompletableDeferred<Unit>()
         val rxBuf     = mutableListOf<Byte>()
+        var negotiatedMtu = 23  // updated in onMtuChanged; used for write chunking
 
         setState(state.get().copy(message = "Connecting to ${device.name ?: device.address}…", progress = 22))
 
@@ -534,6 +535,7 @@ class BridgeService : Service() {
             }
 
             override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+                negotiatedMtu = mtu
                 setState(state.get().copy(message = "Connected (MTU=$mtu) — discovering services…", progress = 30))
                 gatt.discoverServices()
             }
@@ -599,8 +601,10 @@ class BridgeService : Service() {
             val pkt  = hdlcEncode(full + eonCrc32(full))
             eonMagic += 5; eonSeq++
             val tx = txChar ?: throw Exception("EON TX characteristic unavailable")
-            // Send in ≤20-byte chunks; EON's BLE layer buffers bytes before HDLC decode
-            for (chunk in pkt.toList().chunked(20)) {
+            // Use the negotiated ATT MTU (minus 3-byte ATT header) so large commands
+            // fit in one write; fall back to 20 bytes if MTU is still at default.
+            val chunkSize = (negotiatedMtu - 3).coerceAtLeast(20)
+            for (chunk in pkt.toList().chunked(chunkSize)) {
                 tx.value = chunk.toByteArray()
                 gatt.writeCharacteristic(tx)
                 withTimeoutOrNull(5_000) { wrDone.receive() }
@@ -654,11 +658,17 @@ class BridgeService : Service() {
             Log.i(TAG, "EON: ${diveFiles.size} dive files: $diveFiles")
             if (diveFiles.isEmpty()) throw Exception("No dives found on device")
 
+            val deviceLabel = device.name ?: "Suunto EON"
+            setState(state.get().copy(
+                message  = "$deviceLabel — found ${diveFiles.size} dive files, downloading…",
+                progress = 55
+            ))
+
             // 4. Download + parse each dive file
             val dives = mutableListOf<DiveSummary>()
             diveFiles.sorted().forEachIndexed { idx, fn ->
                 setState(state.get().copy(
-                    message  = "Downloading dive ${idx+1}/${diveFiles.size}…",
+                    message  = "$deviceLabel | Dive ${idx+1}/${diveFiles.size}: $fn",
                     progress = 55 + 20 * (idx+1) / diveFiles.size.coerceAtLeast(1)
                 ))
                 try {
@@ -672,10 +682,15 @@ class BridgeService : Service() {
                         (statPay[0].toLong() and 0xFF) or ((statPay[1].toLong() and 0xFF) shl 8) or
                         ((statPay[2].toLong() and 0xFF) shl 16) or ((statPay[3].toLong() and 0xFF) shl 24)
                     else 0L
+                    Log.i(TAG, "EON $fn: size=$fSize bytes")
                     if (fSize < 13 || fSize > 2_000_000L) {
                         Log.w(TAG, "EON $fn: bad file size $fSize, skipping")
+                        setState(state.get().copy(message = "$deviceLabel | $fn — bad size ($fSize B), skipping"))
                         eonSend(0x0510); eonRecv(3_000); return@forEachIndexed
                     }
+                    setState(state.get().copy(
+                        message = "$deviceLabel | Dive ${idx+1}/${diveFiles.size}: $fn (${fSize/1024}KB) — reading…"
+                    ))
                     // CMD_FILE_READ in 1024-byte chunks (marker starts at 1234, per libdivecomputer)
                     val fileData = mutableListOf<Byte>()
                     var marker = 1234
@@ -694,11 +709,29 @@ class BridgeService : Service() {
                     }
                     // CMD_FILE_CLOSE
                     eonSend(0x0510); eonRecv(3_000)
-                    Log.i(TAG, "EON $fn: ${fileData.size} bytes (expected $fSize)")
-                    parseSbemFile(fileData.toByteArray(), fn, idx + 1, device.name ?: "Suunto EON")
-                        ?.let { dives.add(it) }
+                    Log.i(TAG, "EON $fn: downloaded ${fileData.size}/${fSize} bytes")
+                    if (fileData.size < 13) {
+                        Log.w(TAG, "EON $fn: download incomplete (${fileData.size} bytes)")
+                        setState(state.get().copy(message = "$deviceLabel | $fn — incomplete download (${fileData.size}/${fSize} B)"))
+                        return@forEachIndexed
+                    }
+                    val dive = parseSbemFile(fileData.toByteArray(), fn, idx + 1, deviceLabel)
+                    if (dive != null) {
+                        dives.add(dive)
+                        val minT = dive.tempC?.let { " ${"%.1f".format(it)}°C" } ?: ""
+                        setState(state.get().copy(
+                            message = "$deviceLabel | Dive ${idx+1}/${diveFiles.size}: ${dive.divedAt?.take(10)} " +
+                                      "${"%.1f".format(dive.maxDepthM)}m ${dive.durationS/60}min${minT} — ${dive.samples.size} samples",
+                            dives   = dives.map { it.summary() }
+                        ))
+                        Log.i(TAG, "EON dive parsed: ${dive.divedAt} maxD=${dive.maxDepthM}m dur=${dive.durationS}s samples=${dive.samples.size}")
+                    } else {
+                        Log.w(TAG, "EON $fn: parseSbemFile returned null")
+                        setState(state.get().copy(message = "$deviceLabel | $fn — could not parse (too short or no samples)"))
+                    }
                 } catch (ex: Exception) {
                     Log.w(TAG, "EON $fn: ${ex.message}")
+                    setState(state.get().copy(message = "$deviceLabel | $fn error: ${ex.message}"))
                     runCatching { eonSend(0x0510); eonRecv(1_000) }
                 }
             }
@@ -939,15 +972,24 @@ class BridgeService : Service() {
             return lre
         }
 
+        val swLabel = device.name ?: "Shearwater"
+
         return try {
             // ── 1. Firmware version ───────────────────────────────────────────
-            setState(state.get().copy(message = "Reading firmware version…", progress = 40))
+            setState(state.get().copy(message = "$swLabel — reading firmware version…", progress = 40))
             swSend(byteArrayOf(0x22, 0x80.toByte(), 0x11)) // RDBI ID_FIRMWARE
             val fwPkt = swRecv(8_000)
-            Log.i(TAG, "SW firmware pkt: ${fwPkt?.map { "0x${it.toUByte().toString(16)}" }}")
+            val fwPayload = fwPkt?.let { swPayload(it) }
+            val fwStr = if (fwPayload != null && fwPayload.size > 3) {
+                val fwBytes = fwPayload.copyOfRange(3, fwPayload.size)
+                // Firmware may be ASCII or binary; try ASCII first
+                val ascii = String(fwBytes, Charsets.US_ASCII).filter { it.isLetterOrDigit() || it == '.' }
+                if (ascii.isNotEmpty()) ascii else fwBytes.joinToString(".") { (it.toInt() and 0xFF).toString() }
+            } else "?"
+            Log.i(TAG, "SW firmware: $fwStr  raw=${fwPayload?.map { "0x${it.toUByte().toString(16)}" }}")
+            setState(state.get().copy(message = "$swLabel FW $fwStr — reading dive list…", progress = 43))
 
             // ── 2. Log upload info → manifest address + dive count ────────────
-            setState(state.get().copy(message = "Requesting dive manifest info…", progress = 45))
             swSend(byteArrayOf(0x22, 0x80.toByte(), 0x21)) // RDBI ID_LOGUPLOAD
             val logPkt     = swRecv(8_000)
             val logPayload = logPkt?.let { swPayload(it) }
@@ -986,7 +1028,7 @@ class BridgeService : Service() {
             val dives = mutableListOf<DiveSummary>()
             var seq = 0
 
-            setState(state.get().copy(message = "Downloading dive list…", progress = 52))
+            setState(state.get().copy(message = "$swLabel FW $fwStr — downloading manifest…", progress = 52))
             swSend(byteArrayOf(0x35, 0x00, 0x34) + manifestAddr.b4() + manifestSize.b3())
             val manifestInitAck = swRecv(8_000)
             Log.i(TAG, "SW manifest init: ${manifestInitAck?.take(8)?.map { "0x${it.toUByte().toString(16)}" }}")
@@ -1082,8 +1124,8 @@ class BridgeService : Service() {
                     val year    = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))
                         .apply { time = java.util.Date(startTs * 1000L) }
                         .get(java.util.Calendar.YEAR)
-                    if (startTs < 1_000_000_000L || year !in 2010..2035) {
-                        Log.w(TAG, "SW entry: timestamp out of range ($startTs)"); continue
+                    if (startTs < 1_000_000_000L || year !in 2000..2100) {
+                        Log.w(TAG, "SW entry: timestamp out of range ($startTs year=$year)"); continue
                     }
                     seq++
                     val divedAt = sdf.format(java.util.Date(startTs * 1000L))
@@ -1106,6 +1148,11 @@ class BridgeService : Service() {
                 }
             }
             Log.i(TAG, "SW manifest parsed: ${dives.size} dives")
+            setState(state.get().copy(
+                message  = "$swLabel FW $fwStr — found ${dives.size} dives, downloading profiles…",
+                progress = 60
+            ))
+            if (dives.isEmpty()) throw Exception("No dives found in manifest")
 
             // ── 5. Download individual dive profiles ─────────────────────────
             // Each manifest entry has a record address at bytes[20..23].
@@ -1133,8 +1180,8 @@ class BridgeService : Service() {
                 val addr = (formatAddr + dive.recordAddr) and 0xFFFFFFFFL
                 Log.i(TAG, "SW profile ${idx + 1}/${dives.size}: addr=0x${addr.toString(16)} (base=0x${formatAddr.toString(16)} off=0x${dive.recordAddr.toString(16)})")
                 setState(state.get().copy(
-                    message  = "Downloading profile ${idx + 1}/${dives.size}…",
-                    progress = 70 + idx * 8 / dives.size.coerceAtLeast(1)
+                    message  = "$swLabel | Dive ${idx+1}/${dives.size}: ${dive.divedAt?.take(10) ?: "?"} — downloading…",
+                    progress = 62 + 15 * (idx + 1) / dives.size.coerceAtLeast(1)
                 ))
 
                 // 256 KB — generous enough for any dive profile yet small enough that
@@ -1181,13 +1228,18 @@ class BridgeService : Service() {
                     samples.add(DiveSample(t, depthM, tempC.takeIf { it in -5.0..50.0 }))
                     t += PROF_INTERVAL_S
                 }
-                Log.i(TAG, "SW profile ${idx + 1}: ${samples.size} samples maxD=${samples.maxOfOrNull { it.depthM }?.let { "%.1f".format(it) }}m")
+                val maxD  = samples.maxOfOrNull { it.depthM } ?: 0.0
+                val minT  = samples.mapNotNull { it.tempC }.minOrNull()
+                Log.i(TAG, "SW profile ${idx + 1}: ${samples.size} samples maxD=${"%.1f".format(maxD)}m minT=${minT?.let { "%.1f".format(it) } ?: "?"}°C")
 
-                dive.copy(
-                    maxDepthM = samples.maxOfOrNull { it.depthM } ?: 0.0,
-                    tempC     = samples.mapNotNull { it.tempC }.minOrNull(),
-                    samples   = samples
-                )
+                val updated = dive.copy(maxDepthM = maxD, tempC = minT, samples = samples)
+                val tempStr = minT?.let { " ${"%.1f".format(it)}°C" } ?: ""
+                setState(state.get().copy(
+                    message  = "$swLabel | Dive ${idx+1}/${dives.size}: ${dive.divedAt?.take(10) ?: "?"} " +
+                               "${"%.1f".format(maxD)}m ${dive.durationS/60}min${tempStr} — ${samples.size} samples",
+                    progress = 62 + 15 * (idx + 1) / dives.size.coerceAtLeast(1)
+                ))
+                updated
             }
 
             gatt.disconnect()
