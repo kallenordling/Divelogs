@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(deeplog)
 
-set(LIBDC ${CMAKE_SOURCE_DIR}/../../../../../libdivecomputer)
+set(LIBDC ${CMAKE_SOURCE_DIR}/../../../../libdivecomputer)
 
 # ── libdivecomputer ──────────────────────────────────────────────────────────
 add_library(divecomputer STATIC

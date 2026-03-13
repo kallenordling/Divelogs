@@ -7,6 +7,7 @@ plugins {
 android {
     namespace 'fi.deeplog.bridge'
     compileSdk 34
+    ndkVersion "27.0.12077973"
 
     defaultConfig {
         applicationId "fi.deeplog.bridge"

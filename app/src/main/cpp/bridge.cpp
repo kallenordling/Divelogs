@@ -23,6 +23,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <thread>
 #include <functional>
 #include <atomic>
 
