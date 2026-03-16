@@ -1,0 +1,12 @@
+# Build output
+app/build/
+build/
+.gradle/
+app/.cxx/
+local.properties
+gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.DS_Store

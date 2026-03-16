@@ -1,1 +1,0 @@
-/home/nordling/Documents/Divelogs/app/src/main/cpp/CMakeLists.txt
