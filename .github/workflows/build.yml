@@ -2,7 +2,7 @@ name: Build DeepLog
 
 on:
   push:
-    branches: [ main ]
+    branches: [ '**' ]
   workflow_dispatch:
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
           chmod +x ./gradlew
 
       - name: Build APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleDebug --no-build-cache -Dorg.gradle.workers.max=6
 
       - name: Rename APK
         run: mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/deeplog.apk
