@@ -1,0 +1,1978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeepLog — Dive Profile Manager</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600;700&family=Syne:wght@600;800&display=swap');
+
+  :root {
+    --deep: #010d1a;
+    --abyss: #031525;
+    --surface: #052035;
+    --panel: #041c30;
+    --accent: #00d4ff;
+    --accent2: #006fff;
+    --warm: #ff9f43;
+    --coral: #ff6b6b;
+    --green: #26de81;
+    --text: #b8daf0;
+    --muted: #3d6b8a;
+    --border: rgba(0,180,255,0.12);
+    --glow: 0 0 24px rgba(0,180,255,0.25);
+    --mono: 'IBM Plex Mono', monospace;
+    --display: 'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--deep);
+    color: var(--text);
+    font-family: var(--mono);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse 100% 60% at 10% 90%, rgba(0,111,255,0.07) 0%, transparent 60%),
+      radial-gradient(ellipse 70% 50% at 90% 10%, rgba(0,212,255,0.04) 0%, transparent 60%);
+    pointer-events: none; z-index: 0;
+  }
+
+  header {
+    position: sticky; top: 0; z-index: 100;
+    padding: 1rem 2rem;
+    display: flex; align-items: center; justify-content: space-between;
+    background: rgba(3,21,37,0.92);
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo { display: flex; align-items: baseline; gap: 0.6rem; }
+  .logo-main { font-family: var(--display); font-size: 1.6rem; font-weight: 800; color: var(--accent); letter-spacing: -1px; }
+  .logo-sub { font-size: 0.6rem; color: var(--muted); letter-spacing: 3px; text-transform: uppercase; }
+
+  .header-right { display: flex; align-items: center; gap: 0.8rem; }
+  .dive-count { font-size: 0.7rem; color: var(--muted); border: 1px solid var(--border); padding: 0.35rem 0.9rem; border-radius: 20px; }
+  .dive-count span { color: var(--accent); }
+
+  main {
+    position: relative; z-index: 1;
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    grid-template-rows: auto 1fr auto;
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    max-width: 1500px; margin: 0 auto;
+    min-height: calc(100vh - 60px);
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem;
+  }
+
+  .panel-label {
+    font-size: 0.58rem;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 1rem;
+    display: flex; align-items: center; gap: 0.6rem;
+  }
+  .panel-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .bt-panel { grid-column: 1; grid-row: 1; }
+
+  .bt-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+
+  .bt-tab {
+    flex: 1; padding: 0.5rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    cursor: pointer;
+    transition: all 0.15s;
+    text-align: center;
+  }
+  .bt-tab:hover { border-color: var(--accent); color: var(--accent); }
+  .bt-tab.active { border-color: var(--accent); color: var(--accent); background: rgba(0,212,255,0.07); }
+  .bt-tab .bt-badge { display: block; font-size: 0.5rem; letter-spacing: 1px; margin-top: 0.2rem; opacity: 0.7; }
+  .bt-tab.active .bt-badge { opacity: 1; }
+
+  .bt-section { display: none; }
+  .bt-section.active { display: block; }
+
+  .bt-device-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .device-name {
+    font-family: var(--display);
+    font-size: 1rem; font-weight: 600; color: white; margin-bottom: 0.3rem;
+  }
+
+  .device-status {
+    font-size: 0.65rem;
+    display: flex; align-items: center; gap: 0.4rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted); flex-shrink: 0;
+  }
+  .status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.connecting { background: var(--warm); animation: pulse 1s infinite; }
+  .status-dot.error { background: var(--coral); }
+
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+
+  .bt-connect-btn {
+    width: 100%; padding: 0.6rem;
+    background: var(--accent2); border: none; border-radius: 6px;
+    color: white; font-family: var(--mono); font-size: 0.7rem;
+    cursor: pointer; transition: all 0.2s; letter-spacing: 1px;
+  }
+  .bt-connect-btn:hover { background: var(--accent); color: var(--deep); }
+  .bt-connect-btn:disabled { background: var(--surface); color: var(--muted); cursor: not-allowed; }
+
+  .suunto-notice {
+    border: 1px solid rgba(255,159,67,0.3); border-radius: 8px;
+    padding: 1rem; background: rgba(255,159,67,0.04);
+  }
+  .notice-title { font-size: 0.7rem; color: var(--warm); font-weight: 600; margin-bottom: 0.6rem; }
+  .notice-text { font-size: 0.63rem; color: var(--text); line-height: 1.7; opacity: 0.85; }
+  .notice-steps { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.4rem; }
+  .notice-step { display: flex; gap: 0.6rem; align-items: flex-start; font-size: 0.62rem; line-height: 1.5; color: var(--text); opacity: 0.8; }
+  .step-num { flex-shrink: 0; width: 16px; height: 16px; border-radius: 50%; background: rgba(255,159,67,0.2); color: var(--warm); font-size: 0.55rem; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+
+  .bt-progress { display: none; margin-top: 0.8rem; }
+  .bt-progress.show { display: block; }
+  .progress-bar-wrap { height: 3px; background: var(--surface); border-radius: 2px; overflow: hidden; margin-bottom: 0.5rem; }
+  .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent2), var(--accent)); border-radius: 2px; transition: width 0.3s; width: 0%; }
+  .progress-text { font-size: 0.62rem; color: var(--muted); }
+
+  .bt-log {
+    margin-top: 0.8rem; background: rgba(0,0,0,0.3); border-radius: 6px;
+    padding: 0.6rem 0.8rem; max-height: 100px; overflow-y: auto;
+    font-size: 0.58rem; line-height: 1.8; color: var(--muted); display: none;
+  }
+  .bt-log.show { display: block; }
+  .bt-log .log-ok { color: var(--green); }
+  .bt-log .log-err { color: var(--coral); }
+  .bt-log .log-info { color: var(--accent); }
+
+  .import-divider {
+    display: flex; align-items: center; gap: 0.6rem;
+    margin: 1rem 0 0.8rem;
+    font-size: 0.6rem; color: var(--muted);
+  }
+  .import-divider::before, .import-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .drop-zone {
+    border: 1.5px dashed var(--border); border-radius: 8px;
+    padding: 1.2rem 1rem; text-align: center;
+    cursor: pointer; transition: all 0.2s; position: relative;
+  }
+  .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); background: rgba(0,212,255,0.04); box-shadow: var(--glow); }
+  .drop-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .drop-text { font-size: 0.7rem; color: var(--muted); line-height: 1.6; }
+  .drop-text strong { color: var(--text); display: block; margin-bottom: 0.2rem; }
+  .format-tags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.7rem; justify-content: center; }
+  .tag { font-size: 0.55rem; letter-spacing: 1px; padding: 0.15rem 0.5rem; border-radius: 20px; border: 1px solid var(--border); color: var(--muted); text-transform: uppercase; }
+  .tag.sw { border-color: rgba(0,212,255,0.35); color: var(--accent); }
+  .tag.su { border-color: rgba(255,159,67,0.35); color: var(--warm); }
+
+  .demo-btn {
+    width: 100%; margin-top: 0.6rem; padding: 0.55rem;
+    background: transparent; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--muted); font-family: var(--mono); font-size: 0.65rem;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .demo-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .list-panel { grid-column: 1; grid-row: 2 / 4; overflow-y: auto; max-height: 560px; }
+
+  .dive-item {
+    padding: 0.85rem; border: 1px solid transparent; border-radius: 8px;
+    cursor: pointer; transition: all 0.12s; margin-bottom: 0.4rem;
+  }
+  .dive-item:hover { background: rgba(0,212,255,0.04); border-color: var(--border); }
+  .dive-item.active { background: rgba(0,212,255,0.07); border-color: rgba(0,180,255,0.25); }
+
+  .dive-head { display: flex; justify-content: space-between; margin-bottom: 0.4rem; }
+  .dive-num { font-family: var(--display); font-size: 1.1rem; font-weight: 800; color: var(--accent); line-height: 1; }
+  .dive-date { font-size: 0.6rem; color: var(--muted); text-align: right; line-height: 1.5; }
+  .dive-name { font-size: 0.75rem; color: var(--text); margin-bottom: 0.35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dive-name.unnamed { color: var(--muted); font-style: italic; }
+  .dive-stats { display: flex; gap: 0.9rem; font-size: 0.6rem; color: var(--muted); }
+  .loc-tag { font-size: 0.58rem; padding: 0.15rem 0.5rem; border-radius: 10px; background: rgba(38,222,129,0.08); color: var(--green); border: 1px solid rgba(38,222,129,0.2); margin-top: 0.35rem; display: inline-block; }
+
+  .no-dives { text-align: center; color: var(--muted); font-size: 0.72rem; padding: 2.5rem 0; line-height: 2.2; }
+
+  .profile-panel { grid-column: 2; grid-row: 1 / 3; display: flex; flex-direction: column; }
+
+  .profile-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.2rem; }
+  .profile-title { font-family: var(--display); font-size: 1.3rem; font-weight: 800; color: white; line-height: 1.2; }
+  .profile-title small { display: block; font-size: 0.58rem; color: var(--muted); font-family: var(--mono); font-weight: 300; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 0.2rem; }
+
+  .profile-meta { display: flex; gap: 1.2rem; }
+  .meta-item { text-align: right; }
+  .meta-val { font-family: var(--display); font-size: 1.5rem; font-weight: 800; color: var(--accent); line-height: 1; }
+  .meta-lbl { font-size: 0.55rem; color: var(--muted); letter-spacing: 2px; text-transform: uppercase; }
+
+  .chart-wrap { flex: 1; min-height: 240px; position: relative; }
+
+  .empty-profile {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: var(--muted); font-size: 0.75rem; text-align: center; gap: 0.8rem;
+  }
+  .empty-icon { font-size: 2.5rem; opacity: 0.25; }
+
+  .depth-bar { height: 2px; background: linear-gradient(90deg, var(--accent2), var(--accent)); border-radius: 1px; margin-bottom: 1rem; animation: barGrow 0.5s ease-out; transform-origin: left; }
+  @keyframes barGrow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+  .map-panel { grid-column: 2; grid-row: 3; }
+  #map { height: 200px; border-radius: 8px; border: 1px solid var(--border); overflow: hidden; margin-bottom: 0.8rem; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .season-card {
+    flex: 1; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.55rem 0.6rem; text-align: center; min-width: 0;
+  }
+  .season-card .s-label { font-size: 0.52rem; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 0.25rem; }
+  .season-card .s-temp  { font-family: var(--display); font-size: 1rem; font-weight: 800; color: var(--warm); line-height: 1; }
+  .season-card .s-count { font-size: 0.52rem; color: var(--muted); margin-top: 0.2rem; }
+
+  .depth-tab {
+    padding: 0.2rem 0.55rem; border-radius: 20px; font-size: 0.58rem;
+    border: 1px solid var(--border); background: transparent; color: var(--muted);
+    font-family: var(--mono); cursor: pointer; transition: all 0.15s;
+  }
+  .depth-tab:hover { border-color: var(--accent); color: var(--accent); }
+  .depth-tab.active { border-color: var(--accent); color: var(--accent); background: rgba(0,212,255,0.08); }
+
+  .map-actions { display: flex; gap: 0.7rem; align-items: center; }
+  .coords { flex: 1; font-size: 0.62rem; color: var(--muted); }
+  .coords.set { color: var(--green); }
+
+  .btn { padding: 0.55rem 1rem; border-radius: 6px; font-family: var(--mono); font-size: 0.65rem; cursor: pointer; transition: all 0.2s; letter-spacing: 0.5px; border: none; }
+  .btn-primary { background: var(--accent2); color: white; }
+  .btn-primary:hover { background: var(--accent); color: var(--deep); }
+  .btn-primary:disabled { background: var(--surface); color: var(--muted); cursor: not-allowed; }
+  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .btn-ghost:hover:not(:disabled) { border-color: var(--coral); color: var(--coral); }
+  .btn-ghost:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .toast {
+    position: fixed; bottom: 1.5rem; right: 1.5rem;
+    background: var(--abyss); border: 1px solid rgba(0,212,255,0.3);
+    border-radius: 8px; padding: 0.7rem 1.3rem;
+    font-size: 0.7rem; color: var(--accent); z-index: 9999;
+    transform: translateY(80px); opacity: 0; transition: all 0.25s;
+    box-shadow: var(--glow);
+  }
+  .toast.show { transform: translateY(0); opacity: 1; }
+  .toast.warn { border-color: rgba(255,159,67,0.4); color: var(--warm); }
+  .toast.ok { border-color: rgba(38,222,129,0.4); color: var(--green); }
+
+  .hdr-btn {
+    padding: 0.35rem 0.8rem; font-family: var(--mono); font-size: 0.62rem;
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 20px; cursor: pointer; transition: all 0.2s;
+  }
+  .hdr-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  details summary { font-size: 0.65rem; color: var(--muted); cursor: pointer; list-style: none; padding: 0.3rem 0; }
+  details summary::-webkit-details-marker { display: none; }
+
+  .bt-help-box {
+    margin-top: 0.8rem;
+    border: 1px solid rgba(0,212,255,0.25);
+    border-radius: 8px;
+    padding: 0.9rem;
+    background: rgba(0,212,255,0.04);
+    animation: fadeIn 0.2s ease;
+  }
+  .bt-help-box.warn {
+    border-color: rgba(255,159,67,0.35);
+    background: rgba(255,159,67,0.04);
+  }
+  .bt-help-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--warm);
+    margin-bottom: 0.7rem;
+  }
+  .bt-help-body {
+    font-size: 0.62rem;
+    color: var(--text);
+    line-height: 1.7;
+    opacity: 0.85;
+  }
+  .bt-help-step {
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-start;
+    margin-bottom: 0.45rem;
+    line-height: 1.5;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+  /* ── Cloud / Settings modal ──────────────────────────── */
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 2000;
+    background: rgba(1,13,26,0.85); backdrop-filter: blur(8px);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  }
+  .modal-overlay.show { opacity: 1; pointer-events: all; }
+  .modal {
+    background: var(--abyss); border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.8rem; width: min(480px, 94vw); position: relative;
+    animation: slideUp 0.2s ease;
+  }
+  @keyframes slideUp { from { transform: translateY(16px); opacity:0; } to { transform:none; opacity:1; } }
+  .modal-title { font-family: var(--display); font-size: 1.1rem; font-weight: 800; color: white; margin-bottom: 0.3rem; }
+  .modal-sub { font-size: 0.63rem; color: var(--muted); margin-bottom: 1.4rem; line-height: 1.6; }
+  .modal-close {
+    position: absolute; top: 1rem; right: 1rem;
+    background: transparent; border: none; color: var(--muted);
+    font-size: 1.1rem; cursor: pointer; line-height: 1; padding: 0.2rem 0.4rem;
+    border-radius: 4px; transition: color 0.15s;
+  }
+  .modal-close:hover { color: var(--coral); }
+  .field-group { margin-bottom: 1rem; }
+  .field-label { font-size: 0.62rem; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 0.4rem; display: block; }
+  .field-input {
+    width: 100%; padding: 0.6rem 0.8rem;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-family: var(--mono); font-size: 0.72rem;
+    transition: border-color 0.15s; outline: none;
+  }
+  .field-input:focus { border-color: var(--accent); }
+  .field-input::placeholder { color: var(--muted); opacity: 0.5; }
+  .modal-actions { display: flex; gap: 0.7rem; margin-top: 1.4rem; }
+  .conn-status {
+    font-size: 0.62rem; padding: 0.3rem 0.8rem; border-radius: 20px;
+    background: rgba(38,222,129,0.08); color: var(--green);
+    border: 1px solid rgba(38,222,129,0.2); margin-left: auto;
+    align-self: center; display: none;
+  }
+  .conn-status.show { display: block; }
+
+  /* upload badge on dive items */
+  .upload-badge {
+    font-size: 0.55rem; padding: 0.1rem 0.45rem; border-radius: 10px;
+    margin-left: 0.4rem; vertical-align: middle;
+    border: 1px solid rgba(38,222,129,0.25); color: var(--green); background: rgba(38,222,129,0.07);
+  }
+  .upload-badge.pending { border-color: rgba(255,159,67,0.3); color: var(--warm); background: rgba(255,159,67,0.06); }
+  .upload-badge.error { border-color: rgba(255,107,107,0.3); color: var(--coral); background: rgba(255,107,107,0.06); }
+
+  /* cloud panel in list */
+  .cloud-bar {
+    display: flex; align-items: center; gap: 0.6rem;
+    padding: 0.7rem 0.85rem; border-top: 1px solid var(--border);
+    margin-top: 0.5rem; font-size: 0.62rem; color: var(--muted);
+  }
+  .cloud-bar .cloud-user { color: var(--accent); font-weight: 600; }
+  .cloud-bar-actions { margin-left: auto; display: flex; gap: 0.5rem; }
+
+  ::-webkit-scrollbar { width: 3px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; padding: 0.7rem; }
+    .bt-panel, .list-panel, .profile-panel, .map-panel { grid-column: 1; grid-row: auto; }
+    .list-panel { max-height: 300px; }
+  }
+
+  .computer-picker { display:flex; flex-direction:column; gap:0.6rem; }
+  .computer-picker-section-label {
+    font-size:0.54rem; letter-spacing:2.5px; text-transform:uppercase;
+    color:var(--muted); margin-top:0.4rem; margin-bottom:0.1rem; padding-left:0.1rem;
+  }
+  .computer-card {
+    border:1px solid var(--border); border-radius:10px;
+    padding:0.85rem 1.1rem; cursor:pointer; transition:all 0.15s;
+    background:var(--surface); display:flex; align-items:center; gap:0.7rem;
+  }
+  .computer-card:hover { border-color:var(--accent); background:rgba(0,212,255,0.06); box-shadow:var(--glow); }
+  .computer-card.soon { opacity:0.6; cursor:default; }
+  .computer-card.soon:hover { border-color:var(--border); background:var(--surface); box-shadow:none; }
+  .computer-card-info { flex:1; }
+  .computer-card-name { font-family:var(--display); font-size:1rem; font-weight:800; color:white; margin-bottom:0.2rem; }
+  .computer-card-models { font-size:0.58rem; color:var(--muted); line-height:1.5; }
+  .computer-card-badge {
+    flex-shrink:0; font-size:0.5rem; letter-spacing:1px; text-transform:uppercase;
+    padding:0.2rem 0.5rem; border-radius:20px; font-family:var(--mono);
+  }
+  .badge-ready { border:1px solid rgba(38,222,129,0.35); color:var(--green); background:rgba(38,222,129,0.07); }
+  .badge-partial { border:1px solid rgba(255,159,67,0.35); color:var(--warm); background:rgba(255,159,67,0.07); }
+  .badge-soon { border:1px solid var(--border); color:var(--muted); }
+
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <span class="logo-main">DeepLog</span>
+    <span class="logo-sub">BLE Dive Manager</span>
+  </div>
+  <div class="header-right">
+    <button class="hdr-btn" onclick="openSettings()">&#x2601; Cloud</button>
+    <button class="hdr-btn" onclick="exportLog()">&#x2B07; Export JSON</button>
+    <div class="dive-count">Dives: <span id="dive-count-num">0</span></div>
+  </div>
+</header>
+
+<!-- Settings / Cloud modal -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeSettingsOutside(event)">
+  <div class="modal">
+    <button class="modal-close" onclick="closeSettings()">&#x2715;</button>
+    <div class="modal-title">&#x2601; Cloud Settings</div>
+    <div class="modal-sub">
+      Connect to your Supabase project to sync dives across devices and divers.<br>
+      All users share the same project — each diver is identified by their username.
+    </div>
+    <div class="field-group">
+      <label class="field-label">Your username</label>
+      <input class="field-input" id="cfg-username" placeholder="e.g. kalle" autocomplete="off">
+    </div>
+    <div class="field-group">
+      <label class="field-label">Supabase project URL</label>
+      <input class="field-input" id="cfg-url" placeholder="https://xxxx.supabase.co" autocomplete="off">
+    </div>
+    <div class="field-group">
+      <label class="field-label">Supabase anon key</label>
+      <input class="field-input" id="cfg-key" placeholder="eyJhbGciOi..." type="password" autocomplete="off">
+      <div style="font-size:0.58rem;color:var(--muted);margin-top:0.4rem;line-height:1.6">
+        Find these in your Supabase project: Settings &rarr; API. The anon key is safe to use in browsers with Row Level Security enabled.
+      </div>
+    </div>
+    <div class="field-group">
+      <label class="field-label">SQL schema (run once in Supabase SQL editor)</label>
+      <textarea class="field-input" id="schema-sql" readonly rows="8" style="font-size:0.58rem;resize:none;cursor:text;color:var(--muted)"
+      ></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="saveSettings()">Save & Connect</button>
+      <button class="btn btn-ghost" onclick="testConnection()">Test connection</button>
+      <div class="conn-status" id="conn-status">&#x2713; Connected</div>
+    </div>
+  </div>
+</div>
+
+<main>
+  <!-- BT + Import Panel -->
+  <input type="hidden" id="bridge-url" value="http://127.0.0.1:8765">
+  <input type="hidden" id="bridge-address" value="">
+
+  <div class="panel bt-panel">
+    <div class="panel-label">Connect Device</div>
+
+    <div class="computer-picker" id="computer-picker">
+
+      <div class="computer-picker-section-label">Fully supported</div>
+
+      <div class="computer-card" onclick="selectComputer('shearwater')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Shearwater</div>
+          <div class="computer-card-models">Perdix 2 &middot; Perdix &middot; Teric &middot; Peregrine &middot; Tern &middot; NERD &middot; Petrel</div>
+        </div>
+        <span class="computer-card-badge badge-ready">Ready</span>
+      </div>
+
+      <div class="computer-card" onclick="selectComputer('suunto')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Suunto</div>
+          <div class="computer-card-models">EON Steel &middot; EON Core &middot; D5 &middot; G5</div>
+        </div>
+        <span class="computer-card-badge badge-ready">Ready</span>
+      </div>
+
+      <div class="computer-picker-section-label">BLE connect &mdash; dive parsing in progress</div>
+
+      <div class="computer-card" onclick="selectComputer('hw_ostc')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Heinrichs-Weikamp</div>
+          <div class="computer-card-models">OSTC 4 &middot; OSTC 5 &middot; OSTC 2N &middot; OSTC Plus &middot; OSTC Sport</div>
+        </div>
+        <span class="computer-card-badge badge-ready">Ready</span>
+      </div>
+
+      <div class="computer-card" onclick="selectComputer('cressi')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Cressi</div>
+          <div class="computer-card-models">Cartesio &middot; Donatello &middot; Neon &middot; Nepto &middot; Goa</div>
+        </div>
+        <span class="computer-card-badge badge-partial">Beta</span>
+      </div>
+
+      <div class="computer-picker-section-label">Detected &mdash; coming soon</div>
+
+      <div class="computer-card soon" onclick="selectComputer('mares')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Mares</div>
+          <div class="computer-card-models">Genius &middot; Sirius &middot; Quad Air</div>
+        </div>
+        <span class="computer-card-badge badge-soon">Soon</span>
+      </div>
+
+      <div class="computer-card soon" onclick="selectComputer('pelagic')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Oceanic / Aqualung</div>
+          <div class="computer-card-models">i330R &middot; i770R &middot; i200C &middot; DSX &middot; Sherwood Sage &middot; Apeks DSX</div>
+        </div>
+        <span class="computer-card-badge badge-soon">Soon</span>
+      </div>
+
+      <div class="computer-card soon" onclick="selectComputer('scubapro')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">ScubaPro</div>
+          <div class="computer-card-models">G2 &middot; G3 &middot; Aladin A1 &middot; Aladin A2 &middot; Luna 2.0 <span style="color:var(--warm);font-size:0.55rem">(Bluetooth Classic)</span></div>
+        </div>
+        <span class="computer-card-badge badge-soon">Soon</span>
+      </div>
+
+      <div class="computer-card soon" onclick="selectComputer('divesoft')">
+        <div class="computer-card-info">
+          <div class="computer-card-name">Divesoft</div>
+          <div class="computer-card-models">Freedom &middot; Liberty</div>
+        </div>
+        <span class="computer-card-badge badge-soon">Soon</span>
+      </div>
+
+    </div>
+
+    <div id="download-ui" style="display:none">
+      <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:1rem">
+        <button onclick="deselectComputer()" style="background:none;border:none;color:var(--muted);font-family:var(--mono);font-size:0.7rem;cursor:pointer;padding:0">&larr; back</button>
+        <div id="selected-computer-label" style="font-family:var(--display);font-size:1rem;font-weight:800;color:white"></div>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:0.4rem">
+          <div id="dl-status-dot" class="status-dot"></div>
+          <span id="dl-status-text" style="font-size:0.62rem;color:var(--muted)">Ready</span>
+        </div>
+      </div>
+      <div id="dl-prepare-hint" style="font-size:0.63rem;color:var(--muted);line-height:1.7;margin-bottom:1rem;padding:0.7rem;background:rgba(0,212,255,0.04);border:1px solid var(--border);border-radius:8px"></div>
+      <button class="bt-connect-btn" id="bridge-dl-btn" onclick="bridgeDownload()">&#x2B07; Download dives</button>
+      <div id="bridge-progress-wrap" style="display:none;margin-top:0.8rem">
+        <div style="font-size:0.6rem;color:var(--muted);margin-bottom:0.3rem" id="bridge-status-text"></div>
+        <div style="height:3px;background:var(--surface);border-radius:2px;overflow:hidden">
+          <div id="bridge-progress-bar" style="height:100%;background:var(--accent);width:0%;transition:width 0.4s"></div>
+        </div>
+      </div>
+      <div id="bridge-log" style="font-size:0.6rem;font-family:var(--mono);color:var(--muted);max-height:140px;overflow-y:auto;line-height:1.7;margin-top:0.5rem"></div>
+    </div>
+
+    <div class="import-divider">or import file</div>
+    <div class="drop-zone" id="drop-zone">
+      <input type="file" id="file-input" accept=".xml,.sml,.json,.uddf" multiple>
+      <div class="drop-text">
+        <strong>Drop dive file here</strong>
+        or click to browse
+      </div>
+      <div class="format-tags">
+        <span class="tag sw">Shearwater XML</span>
+        <span class="tag sw">Shearwater JSON</span>
+        <span class="tag su">Suunto SML</span>
+        <span class="tag">UDDF</span>
+      </div>
+    </div>
+    <button class="demo-btn" onclick="loadDemo()">&#x25B6; Load demo dives</button>
+  </div>
+
+  <!-- Dive List -->
+  <div class="panel list-panel">
+    <div class="panel-label">Dive Log</div>
+    <div id="dive-list-content">
+      <div class="no-dives">No dives yet.<br>Connect a device or import a file.</div>
+    </div>
+    <div class="cloud-bar" id="cloud-bar" style="display:none">
+      <span>&#x2601; <span class="cloud-user" id="cloud-user-label"></span></span>
+      <div class="cloud-bar-actions">
+        <button class="btn btn-primary" style="padding:0.35rem 0.8rem;font-size:0.6rem" onclick="uploadAllDives()">&#x2B06; Upload all</button>
+        <button class="btn btn-ghost"  style="padding:0.35rem 0.8rem;font-size:0.6rem" onclick="openSettings()">&#x2699;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Profile Chart -->
+  <div class="panel profile-panel">
+    <div class="panel-label">Depth Profile</div>
+    <div id="profile-content" class="empty-profile">
+      <div class="empty-icon">&#x1F4C9;</div>
+      <div>Select a dive to view its profile</div>
+    </div>
+  </div>
+
+  <!-- Map + Site Analysis Panel -->
+  <div class="panel map-panel" id="map-panel">
+    <!-- Mode A: Location tagging (shown when a dive is selected) -->
+    <div id="map-tag-view">
+      <div class="panel-label" id="map-panel-label">Location Tagging</div>
+      <div id="map"></div>
+      <div class="map-actions">
+        <div class="coords" id="coords">Select a dive then click the map</div>
+        <button class="btn btn-primary" id="save-loc-btn" onclick="saveLocation()" disabled>Save</button>
+        <button class="btn btn-ghost" id="clear-loc-btn" onclick="clearLocation()" disabled>Clear</button>
+      </div>
+      <div id="site-hint" style="margin-top:0.6rem;font-size:0.6rem;color:var(--muted);display:none">
+        &#x1F321; <span id="site-hint-text"></span>
+        &nbsp;<button onclick="showSiteAnalysis(currentSiteName)" style="background:none;border:none;color:var(--accent);font-family:var(--mono);font-size:0.6rem;cursor:pointer;padding:0;text-decoration:underline">View site temperature →</button>
+      </div>
+    </div>
+
+    <!-- Mode B: Site temperature analysis (shown when site is clicked) -->
+    <div id="site-analysis-view" style="display:none;height:100%;display:none;flex-direction:column;gap:0.7rem">
+      <div style="display:flex;align-items:center;gap:0.6rem">
+        <button onclick="closeSiteAnalysis()" style="background:none;border:none;color:var(--muted);font-family:var(--mono);font-size:0.7rem;cursor:pointer;padding:0;flex-shrink:0">← back</button>
+        <div style="flex:1">
+          <div id="site-name-title" style="font-family:var(--display);font-size:1rem;font-weight:800;color:white;line-height:1.2"></div>
+          <div id="site-meta" style="font-size:0.58rem;color:var(--muted);margin-top:0.1rem"></div>
+        </div>
+        <div id="site-spinner" style="display:none">
+          <div style="width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.7s linear infinite"></div>
+        </div>
+      </div>
+
+      <!-- Season stats row -->
+      <div id="season-row" style="display:flex;gap:0.5rem"></div>
+
+      <!-- Depth-bin tabs -->
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap" id="depth-tabs"></div>
+
+      <!-- Temperature over time chart -->
+      <div style="flex:1;min-height:160px;position:relative">
+        <canvas id="site-temp-chart"></canvas>
+        <div id="site-no-data" style="display:none;position:absolute;inset:0;display:none;align-items:center;justify-content:center;font-size:0.7rem;color:var(--muted);flex-direction:column;gap:0.5rem">
+          <span style="font-size:1.5rem;opacity:0.3">🌡</span>
+          No temperature data for this site yet.<br>
+          <span style="font-size:0.6rem;opacity:0.6">Upload dives with temperature to contribute.</span>
+        </div>
+      </div>
+
+      <!-- Contributor list -->
+      <div id="site-contributors" style="font-size:0.58rem;color:var(--muted);border-top:1px solid var(--border);padding-top:0.5rem"></div>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+let dives = [];
+let selectedIdx = null;
+let pendingMarker = null;
+let profileChart = null;
+let map, bleDevice, bleChar;
+
+// ─── Shearwater BLE UUIDs & SLIP protocol ─────────────────────────────────────
+const SW_SERVICE = 'fe25c237-0ece-443c-b0aa-e02033e7029d';
+const SW_CHAR    = '27b7570b-359e-45a3-91bb-cf7e70049bd2';
+
+const SLIP_END     = 0xC0;
+const SLIP_ESC     = 0xDB;
+const SLIP_ESC_END = 0xDC;
+const SLIP_ESC_ESC = 0xDD;
+
+// Known-good request packets from libdivecomputer shearwater_common.c logs
+const SW_REQ_VERSION  = [0x01,0x00,0xFF,0x01,0x04,0x00,0x22,0x80,0x10];
+const SW_REQ_DIVELIST = [0x01,0x00,0xFF,0x01,0x05,0x00,0x2E,0x90,0x20,0x00];
+
+function slipEncode(data) {
+  const out = [SLIP_END];
+  for (const b of data) {
+    if (b === SLIP_END)      { out.push(SLIP_ESC, SLIP_ESC_END); }
+    else if (b === SLIP_ESC) { out.push(SLIP_ESC, SLIP_ESC_ESC); }
+    else                     { out.push(b); }
+  }
+  out.push(SLIP_END);
+  return new Uint8Array(out);
+}
+
+function slipDecode(data) {
+  const out = [];
+  let i = 0;
+  while (i < data.length && data[i] === SLIP_END) i++;
+  while (i < data.length && data[i] !== SLIP_END) {
+    if (data[i] === SLIP_ESC) {
+      i++;
+      out.push(data[i] === SLIP_ESC_END ? SLIP_END : SLIP_ESC);
+    } else {
+      out.push(data[i]);
+    }
+    i++;
+  }
+  return new Uint8Array(out);
+}
+
+// ─── BLE helpers ─────────────────────────────────────────────────────────────
+let swRxBuffer = [];
+let swPackets  = [];
+let swResolve  = null;
+
+function swLog(msg, cls) {
+  const el = document.getElementById('sw-log');
+  el.classList.add('show');
+  const div = document.createElement('div');
+  div.className = cls || '';
+  div.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+function swSetStatus(state, text) {
+  document.getElementById('sw-dot').className = 'status-dot ' + state;
+  document.getElementById('sw-status-text').textContent = text;
+}
+
+function swProgress(pct, text) {
+  document.getElementById('sw-progress').classList.add('show');
+  document.getElementById('sw-bar').style.width = pct + '%';
+  document.getElementById('sw-progress-text').textContent = text;
+}
+
+function waitForPacket(ms) {
+  if (swPackets.length) return Promise.resolve(swPackets.shift());
+  return new Promise(resolve => {
+    swResolve = resolve;
+    setTimeout(() => { if (swResolve) { swResolve(null); swResolve = null; } }, ms);
+  });
+}
+
+function onSwNotify(event) {
+  const bytes = new Uint8Array(event.target.value.buffer);
+  for (const b of bytes) {
+    swRxBuffer.push(b);
+    if (b === SLIP_END && swRxBuffer.length > 1) {
+      const decoded = slipDecode(new Uint8Array(swRxBuffer));
+      swRxBuffer = [];
+      if (swResolve) { swResolve(decoded); swResolve = null; }
+      else swPackets.push(decoded);
+    }
+  }
+}
+
+function onSwDisconnected() {
+  swSetStatus('', 'Disconnected');
+  swLog('Device disconnected', 'log-err');
+  document.getElementById('sw-connect-btn').disabled = false;
+}
+
+// ─── Shearwater Connect & Download ───────────────────────────────────────────
+
+function showBtHelp(reason) {
+  const isAndroid = /android/i.test(navigator.userAgent);
+  let html = '';
+
+  if (reason === 'no-api') {
+    html = '<div class="bt-help-box">' +
+      '<div class="bt-help-title">&#x26A0; Web Bluetooth not supported</div>' +
+      '<div class="bt-help-body">' +
+        (isAndroid
+          ? 'Use <strong>Chrome for Android</strong> (not Samsung Internet, Firefox, or Brave).'
+          : 'Use <strong>Chrome</strong> or <strong>Edge</strong> on desktop. Firefox and Safari do not support Web Bluetooth.') +
+      '</div></div>';
+  } else if (reason === 'no-adapter') {
+    html = '<div class="bt-help-box warn">' +
+      '<div class="bt-help-title">&#x1F6AB; Bluetooth adapter not found</div>' +
+      '<div class="bt-help-body">' +
+        (isAndroid ? [
+          '<strong>On Android, fix this in order:</strong>',
+          '<div class="bt-help-step"><span class="step-num">1</span>Pull down notification shade &rarr; tap <strong>Bluetooth</strong> to turn it ON</div>',
+          '<div class="bt-help-step"><span class="step-num">2</span>Pull down again &rarr; tap <strong>Location</strong> to turn it ON<br><small style="opacity:0.7">(Android requires Location for BLE scanning &mdash; it\'s a system quirk)</small></div>',
+          '<div class="bt-help-step"><span class="step-num">3</span>Go to <strong>Settings &rarr; Apps &rarr; Chrome &rarr; Permissions &rarr; Location</strong> &rarr; set to <em>Allow while using the app</em></div>',
+          '<div class="bt-help-step"><span class="step-num">4</span>Reload this page and try again</div>',
+          '<div style="margin-top:0.8rem;font-size:0.6rem;color:var(--muted)">If still failing, open <strong>chrome://flags</strong> and search for <em>bluetooth</em> &rarr; enable <em>Web Bluetooth new permissions backend</em></div>'
+        ].join('') : [
+          '<strong>On desktop:</strong>',
+          '<div class="bt-help-step"><span class="step-num">1</span>Check Bluetooth is ON in <strong>System Settings</strong></div>',
+          '<div class="bt-help-step"><span class="step-num">2</span>On Windows: make sure no other app (e.g. Shearwater Cloud Desktop) has exclusive BLE access</div>',
+          '<div class="bt-help-step"><span class="step-num">3</span>Try refreshing the page</div>'
+        ].join('')) +
+      '</div></div>';
+  } else if (reason === 'permission-denied') {
+    html = '<div class="bt-help-box warn">' +
+      '<div class="bt-help-title">&#x1F512; Bluetooth permission denied</div>' +
+      '<div class="bt-help-body">' +
+        (isAndroid ? [
+          '<div class="bt-help-step"><span class="step-num">1</span>In Android <strong>Settings &rarr; Apps &rarr; Chrome &rarr; Permissions</strong></div>',
+          '<div class="bt-help-step"><span class="step-num">2</span>Enable <strong>Nearby devices</strong> (Android 12+) or <strong>Location</strong> (Android 11 and below)</div>',
+          '<div class="bt-help-step"><span class="step-num">3</span>Reload and try again</div>'
+        ].join('') : '<div class="bt-help-step"><span class="step-num">1</span>Click the lock icon in Chrome\'s address bar &rarr; allow Bluetooth</div>') +
+      '</div></div>';
+  }
+
+  let box = document.getElementById('bt-help-container');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'bt-help-container';
+    document.getElementById('sw-connect-btn').insertAdjacentElement('afterend', box);
+  }
+  box.innerHTML = html;
+}
+
+// ─── Computer picker ─────────────────────────────────────────────────────────
+
+const COMPUTER_LABELS = {
+  shearwater: 'Shearwater',
+  suunto:     'Suunto',
+  hw_ostc:    'Heinrichs-Weikamp OSTC',
+  mares:      'Mares',
+  pelagic:    'Oceanic / Aqualung',
+  scubapro:   'ScubaPro',
+  cressi:     'Cressi',
+  divesoft:   'Divesoft',
+};
+
+const COMPUTER_HINTS = {
+  shearwater: 'On your Shearwater: press <strong style="color:white">LEFT</strong> until Bluetooth is highlighted, then <strong style="color:white">RIGHT</strong> to activate. Keep the computer within 30 cm.',
+  suunto:     'On your Suunto: Settings &rarr; Connectivity &rarr; Airplane Mode: <strong style="color:white">Off</strong>. A passkey will appear on the dive computer &mdash; confirm it on your phone when prompted.',
+  hw_ostc:    'On your OSTC: navigate to <strong style="color:white">Bluetooth</strong> in the menu and activate BLE mode. Keep the computer within 30 cm. The OSTC command protocol and dive log parsing are fully implemented.',
+  mares:      '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Mares: activate Bluetooth from the main menu. Your device will be detected but dive download is not yet available.',
+  pelagic:    '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Oceanic/Aqualung/Sherwood/Apeks: enable Bluetooth in device settings. Detection works; dive download is not yet available.',
+  scubapro:   '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your ScubaPro: enable Bluetooth in the device menu. Detection works; dive download is not yet available.',
+  cressi:     'On your Cressi: activate <strong style="color:white">Bluetooth</strong> from device settings. Keep the computer within 30 cm. <em style="color:var(--warm)">Beta: tested against v4 firmware (200–299). Older firmware may need a future update.</em>',
+  divesoft:   '<span style="color:var(--warm)">&#x26A0; Coming soon.</span> On your Divesoft: enable Bluetooth in the menu. Detection works; dive download is not yet available.',
+};
+
+let selectedComputer = null;
+
+function selectComputer(type) {
+  selectedComputer = type;
+  document.getElementById('computer-picker').style.display = 'none';
+  document.getElementById('download-ui').style.display = 'block';
+  document.getElementById('selected-computer-label').textContent = COMPUTER_LABELS[type] || type;
+  document.getElementById('dl-prepare-hint').innerHTML = COMPUTER_HINTS[type] || '';
+  document.getElementById('bridge-log').innerHTML = '';
+  document.getElementById('bridge-progress-wrap').style.display = 'none';
+  document.getElementById('bridge-dl-btn').disabled = false;
+  document.getElementById('dl-status-dot').className = 'status-dot';
+  document.getElementById('dl-status-text').textContent = 'Ready';
+}
+
+function deselectComputer() {
+  selectedComputer = null;
+  document.getElementById('download-ui').style.display = 'none';
+  document.getElementById('computer-picker').style.display = 'flex';
+}
+
+function switchTab() {}   // no-op, kept for any stale references
+
+// ─── File Parsing ─────────────────────────────────────────────────────────────
+function buildDive(source, num, name, date, profile) {
+  const maxDepth = profile.length ? Math.max(...profile.map(p => p.depth)) : 0;
+  const duration = profile.length ? profile[profile.length - 1].time : 0;
+  const temps = profile.map(p => p.temp).filter(t => t != null && t > -50 && t < 50);
+  const minTemp = temps.length ? Math.min(...temps) : null;
+  const avgTemp = temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : null;
+  return { source, number: num, name, date, maxDepth, duration, profile, minTemp, avgTemp, location: null };
+}
+
+function parseShearwaterXML(xml) {
+  return [...xml.querySelectorAll('Dive')].map((d, i) => {
+    const profile = [...d.querySelectorAll('Sample')].map(s => ({
+      time:  parseFloat(s.querySelector('Time')?.textContent  || 0),
+      depth: parseFloat(s.querySelector('Depth')?.textContent || 0),
+      temp:  parseFloat(s.querySelector('Temperature')?.textContent || 0)
+    }));
+    return buildDive('Shearwater', i+1, d.querySelector('DiveName,Name')?.textContent || null, d.querySelector('Date,StartTime')?.textContent || null, profile);
+  });
+}
+
+function parseSuuntoSML(xml) {
+  return [...xml.querySelectorAll('Dive')].map((d, i) => {
+    const profile = [...d.querySelectorAll('Sample')].map(s => ({
+      time:  parseFloat(s.querySelector('Time')?.textContent  || 0),
+      depth: parseFloat(s.querySelector('Depth')?.textContent || 0),
+      temp:  parseFloat(s.querySelector('Temperature')?.textContent || 0)
+    }));
+    return buildDive('Suunto', i+1, null, d.querySelector('DateTime,StartTime')?.textContent || null, profile);
+  });
+}
+
+function parseUDDF(xml) {
+  return [...xml.querySelectorAll('dive')].map((d, i) => {
+    const profile = [...d.querySelectorAll('waypoint')].map(wp => ({
+      time:  parseFloat(wp.querySelector('divetime')?.textContent || 0),
+      depth: parseFloat(wp.querySelector('depth')?.textContent   || 0),
+      temp:  parseFloat(wp.querySelector('temperature')?.textContent || 0)
+    }));
+    return buildDive('UDDF', i+1, null, d.querySelector('date')?.textContent || null, profile);
+  });
+}
+
+function parseShearwaterJSON(content) {
+  const data = JSON.parse(content);
+  const raw = data.dives || data.Dives || (Array.isArray(data) ? data : [data]);
+  return raw.map((d, i) => {
+    const profile = (d.profile || d.samples || d.diveSamples || []).map(s => ({
+      time: s.time ?? s.Time ?? 0, depth: s.depth ?? s.Depth ?? 0, temp: s.temperature ?? 0
+    }));
+    return buildDive('Shearwater', i+1, d.name || null, d.date || null, profile);
+  });
+}
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const content = e.target.result;
+      let parsed;
+      if (file.name.endsWith('.json')) {
+        parsed = parseShearwaterJSON(content);
+      } else {
+        const xml = new DOMParser().parseFromString(content, 'text/xml');
+        const root = xml.documentElement.tagName.toLowerCase();
+        if (root === 'uddf') parsed = parseUDDF(xml);
+        else if (xml.querySelector('SuuntoML,SML,Move')) parsed = parseSuuntoSML(xml);
+        else parsed = parseShearwaterXML(xml);
+      }
+      if (!parsed.length) throw new Error('No dives found in file');
+      const base = dives.length;
+      parsed.forEach((d, i) => d.number = base + i + 1);
+      dives.push(...parsed);
+      renderList();
+      toast(parsed.length + ' dive' + (parsed.length > 1 ? 's' : '') + ' imported from ' + file.name, 'ok');
+    } catch (err) {
+      toast('Could not parse file: ' + err.message, 'warn');
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ─── Demo Data ────────────────────────────────────────────────────────────────
+function loadDemo() {
+  function makeDive(num, name, date, maxD, dur, loc) {
+    const profile = [];
+    const desc = dur * 0.15, btm = dur * 0.65;
+    for (let t = 0; t <= dur; t += 20) {
+      let depth;
+      if (t < desc) depth = (t / desc) * maxD;
+      else if (t < desc + btm) depth = maxD + (Math.random() - 0.5) * maxD * 0.07;
+      else { const a = t - desc - btm, at = dur - desc - btm; depth = Math.max(0, maxD * (1 - a / at)); }
+      profile.push({ time: t, depth: Math.round(depth * 10) / 10, temp: 17 + Math.random() * 6 });
+    }
+    return { source: 'Demo', number: num, name, date, maxDepth: maxD, duration: dur, profile,
+             minTemp: Math.min(...profile.map(p=>p.temp)),
+             avgTemp: profile.reduce((a,b)=>a+b.temp,0)/profile.length,
+             location: loc };
+  }
+
+  dives = [
+    makeDive(1, 'Richelieu Rock',    '2024-11-03T08:42', 28.4, 3420, { lat:  9.3614, lng:  97.7765, name: 'Richelieu Rock, Thailand' }),
+    makeDive(2, 'Elphinstone Reef',  '2024-11-05T10:15', 34.2, 2880, { lat: 24.0128, lng:  36.8278, name: 'Elphinstone Reef, Egypt'  }),
+    makeDive(3, 'Great Blue Hole',   '2024-11-07T09:00', 40.1, 3180, { lat: 17.3128, lng: -87.5346, name: 'Blue Hole, Belize'        }),
+    makeDive(4, 'Manta Point',       '2024-11-08T14:30', 22.6, 2640, { lat: -8.7228, lng: 115.1679, name: 'Manta Point, Bali'        }),
+    makeDive(5, 'SS Thistlegorm',    '2024-11-10T07:45', 32.0, 3600, { lat: 27.8134, lng:  32.6463, name: 'SS Thistlegorm, Red Sea'  }),
+  ];
+  renderList();
+  dives.forEach(d => { if (d.location) addMapMarker(d.location.lat, d.location.lng, d.name); });
+  toast('Demo loaded - 5 dives', 'ok');
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────────
+function renderList() {
+  document.getElementById('dive-count-num').textContent = dives.length;
+  const el = document.getElementById('dive-list-content');
+  const hasCloud = cfg.url && cfg.key;
+  if (!dives.length) {
+    el.innerHTML = '<div class="no-dives">No dives yet.<br>Connect a device or import a file.</div>';
+    return;
+  }
+  el.innerHTML = dives.map((d, i) => {
+    const dateStr = d.date ? new Date(d.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Unknown date';
+    const mins = Math.floor(d.duration / 60);
+    const secs = String(Math.round(d.duration % 60)).padStart(2, '0');
+    let badge = '';
+    if (hasCloud) {
+      if (d.uploadStatus === 'ok')      badge = '<span class="upload-badge">&#x2601; synced</span>';
+      else if (d.uploadStatus === 'pending') badge = '<span class="upload-badge pending">&#x2191; uploading</span>';
+      else if (d.uploadStatus === 'error')   badge = '<span class="upload-badge error" title="' + (d.uploadError||'') + '">&#x26A0; failed</span>';
+      else badge = '<button class="upload-badge pending" style="cursor:pointer;border:none" onclick="event.stopPropagation();uploadDive(' + i + ')">&#x2B06; upload</button>';
+    }
+    return '<div class="dive-item ' + (selectedIdx === i ? 'active' : '') + '" onclick="selectDive(' + i + ')">' +
+      '<div class="dive-head"><div class="dive-num">#' + d.number + badge + '</div>' +
+      '<div class="dive-date">' + dateStr + '<br><span style="color:var(--muted);font-size:0.58rem">' + d.source + '</span></div></div>' +
+      '<div class="dive-name ' + (!d.name ? 'unnamed' : '') + '">' + (d.name || (d.profilePending ? 'Summary only' : 'Unnamed dive')) + '</div>' +
+      '<div class="dive-stats"><span>&#x2B07; ' + d.maxDepth.toFixed(1) + 'm</span><span>&#x23F1; ' + mins + ':' + secs + '</span>' +
+      (d.minTemp != null ? '<span>&#x1F321; ' + d.minTemp.toFixed(1) + '&#xB0;C</span>' : '') + '</div>' +
+      (d.location ? '<div class="loc-tag">&#x1F4CD; ' + (d.location.name || d.location.lat.toFixed(4) + ', ' + d.location.lng.toFixed(4)) + '</div>' : '') +
+      '</div>';
+  }).join('');
+}
+
+function selectDive(i) {
+  selectedIdx = i;
+  renderList();
+  renderProfile(dives[i]);
+  updateMap(dives[i]);
+}
+
+function renderProfile(dive) {
+  const panel = document.getElementById('profile-content');
+
+  if (dive.profilePending || !dive.profile || dive.profile.length < 2) {
+    panel.className = 'empty-profile';
+    panel.innerHTML = '<div class="empty-icon">&#x1F4CA;</div><div>' +
+      (dive.profilePending
+        ? 'Summary downloaded &mdash; full profile requires a separate per-dive request (not yet implemented for BLE).<br><small style="opacity:0.5;font-size:0.65rem">Use file import for full profiles.</small>'
+        : 'No profile samples in this dive') +
+      '</div>' +
+      (dive.rawPkt ? '<div style="font-size:0.52rem;color:var(--muted);word-break:break-all;max-width:90%;margin-top:0.5rem;opacity:0.4">Raw packet: ' + dive.rawPkt + '</div>' : '');
+    return;
+  }
+
+  const hasTemp = dive.profile.some(p => p.temp != null && p.temp > -50 && p.temp < 50);
+  const minT = hasTemp ? Math.min(...dive.profile.filter(p=>p.temp!=null).map(p=>p.temp)) : null;
+  const maxT = hasTemp ? Math.max(...dive.profile.filter(p=>p.temp!=null).map(p=>p.temp)) : null;
+  const avgT = hasTemp ? (dive.profile.filter(p=>p.temp!=null).reduce((a,b)=>a+b.temp,0) / dive.profile.filter(p=>p.temp!=null).length) : null;
+
+  panel.className = '';
+  panel.innerHTML =
+    '<div class="profile-header">' +
+      '<div class="profile-title"><small>Depth Profile' + (hasTemp ? ' + Temperature' : '') + '</small>' + (dive.name || 'Unnamed Dive') + '</div>' +
+      '<div class="profile-meta">' +
+        '<div class="meta-item"><div class="meta-val">' + dive.maxDepth.toFixed(1) + 'm</div><div class="meta-lbl">Max Depth</div></div>' +
+        '<div class="meta-item"><div class="meta-val">' + Math.floor(dive.duration/60) + ':' + String(Math.round(dive.duration%60)).padStart(2,'0') + '</div><div class="meta-lbl">Duration</div></div>' +
+        (minT != null ? '<div class="meta-item"><div class="meta-val" style="color:#26de81">' + minT.toFixed(1) + '&#xB0;</div><div class="meta-lbl">Min Temp</div></div>' : '') +
+        (avgT != null ? '<div class="meta-item"><div class="meta-val" style="color:#ff9f43">' + avgT.toFixed(1) + '&#xB0;</div><div class="meta-lbl">Avg Temp</div></div>' : '') +
+        (maxT != null ? '<div class="meta-item"><div class="meta-val" style="color:#ff6b6b">' + maxT.toFixed(1) + '&#xB0;</div><div class="meta-lbl">Surface Temp</div></div>' : '') +
+      '</div>' +
+    '</div>' +
+    '<div class="depth-bar"></div>' +
+    '<div class="chart-wrap"><canvas id="profile-chart"></canvas></div>';
+
+  if (profileChart) { profileChart.destroy(); profileChart = null; }
+
+  const ctx = document.getElementById('profile-chart').getContext('2d');
+  const labels = dive.profile.map(p => Math.floor(p.time/60) + ':' + String(p.time % 60).padStart(2,'0'));
+  const depths  = dive.profile.map(p => -p.depth);
+  const temps   = dive.profile.map(p => (p.temp != null && p.temp > -50 && p.temp < 50) ? p.temp : null);
+
+  const datasets = [{
+    label: 'Depth',
+    data: depths,
+    yAxisID: 'yDepth',
+    borderColor: '#00d4ff', borderWidth: 2,
+    fill: true,
+    backgroundColor: ctx2 => {
+      const g = ctx2.chart.ctx.createLinearGradient(0, 0, 0, ctx2.chart.height);
+      g.addColorStop(0, 'rgba(0,212,255,0.13)');
+      g.addColorStop(1, 'rgba(0,111,255,0.02)');
+      return g;
+    },
+    tension: 0.4, pointRadius: 0, pointHoverRadius: 3,
+    pointHoverBackgroundColor: '#00d4ff',
+    order: 2
+  }];
+
+  if (hasTemp) {
+    datasets.push({
+      label: 'Temp (°C)',
+      data: temps,
+      yAxisID: 'yTemp',
+      borderColor: '#ff9f43',
+      borderWidth: 1.5,
+      borderDash: [4, 3],
+      fill: false,
+      tension: 0.4,
+      pointRadius: 0,
+      pointHoverRadius: 3,
+      pointHoverBackgroundColor: '#ff9f43',
+      spanGaps: true,
+      order: 1
+    });
+  }
+
+  const scales = {
+    x: {
+      grid: { color: 'rgba(0,212,255,0.04)' },
+      ticks: { color: '#3d6b8a', font: { family: "'IBM Plex Mono'", size: 9 }, maxTicksLimit: 8 }
+    },
+    yDepth: {
+      position: 'left',
+      grid: { color: 'rgba(0,212,255,0.04)' },
+      ticks: { color: '#3d6b8a', font: { family: "'IBM Plex Mono'", size: 9 }, callback: v => Math.abs(v) + 'm' },
+      title: { display: true, text: 'Depth', color: '#3d6b8a', font: { family: "'IBM Plex Mono'", size: 8 } }
+    }
+  };
+
+  if (hasTemp) {
+    const tempPad = (maxT - minT) * 0.2 || 1;
+    scales.yTemp = {
+      position: 'right',
+      grid: { drawOnChartArea: false },
+      min: minT - tempPad,
+      max: maxT + tempPad,
+      ticks: { color: '#ff9f43', font: { family: "'IBM Plex Mono'", size: 9 }, callback: v => v.toFixed(1) + '°' },
+      title: { display: true, text: 'Temp °C', color: '#ff9f43', font: { family: "'IBM Plex Mono'", size: 8 } }
+    };
+  }
+
+  profileChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: hasTemp,
+          labels: { color: '#3d6b8a', font: { family: "'IBM Plex Mono'", size: 9 }, boxWidth: 20, padding: 10 }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(3,21,37,0.97)',
+          borderColor: 'rgba(0,212,255,0.25)', borderWidth: 1,
+          titleColor: '#3d6b8a', bodyColor: '#b8daf0',
+          titleFont: { family: "'IBM Plex Mono',monospace", size: 10 },
+          bodyFont:  { family: "'IBM Plex Mono',monospace", size: 11 },
+          callbacks: {
+            title: items => 't = ' + items[0].label,
+            label: item => {
+              if (item.dataset.label === 'Depth') return 'Depth: ' + Math.abs(item.raw).toFixed(1) + 'm';
+              if (item.dataset.label === 'Temp (°C)' && item.raw != null) return 'Temp: ' + item.raw.toFixed(1) + '°C';
+              return null;
+            }
+          }
+        }
+      },
+      scales,
+      animation: { duration: 500, easing: 'easeInOutQuart' }
+    }
+  });
+}
+
+// ─── Map ──────────────────────────────────────────────────────────────────────
+function initMap() {
+  map = L.map('map', { zoomControl: true }).setView([20, 0], 2);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    { attribution: '© OpenStreetMap, © CARTO', maxZoom: 19 }).addTo(map);
+
+  const mkIcon = () => L.divIcon({
+    html: '<div style="width:12px;height:12px;border-radius:50%;background:#00d4ff;border:2px solid white;box-shadow:0 0 10px rgba(0,212,255,0.7);"></div>',
+    className: '', iconAnchor: [6, 6]
+  });
+
+  map.on('click', e => {
+    if (selectedIdx === null) return;
+    if (pendingMarker) map.removeLayer(pendingMarker);
+    pendingMarker = L.marker([e.latlng.lat, e.latlng.lng], { icon: mkIcon() }).addTo(map);
+    document.getElementById('coords').textContent = e.latlng.lat.toFixed(5) + ', ' + e.latlng.lng.toFixed(5);
+    document.getElementById('coords').className = 'coords set';
+    document.getElementById('save-loc-btn').disabled = false;
+    document.getElementById('clear-loc-btn').disabled = false;
+  });
+}
+
+function addMapMarker(lat, lng, name) {
+  const icon = L.divIcon({
+    html: '<div style="width:9px;height:9px;border-radius:50%;background:#00d4ff;border:2px solid rgba(255,255,255,0.6);box-shadow:0 0 6px rgba(0,212,255,0.5);cursor:pointer"></div>',
+    className: '', iconAnchor: [4, 4]
+  });
+  const marker = L.marker([lat, lng], { icon }).addTo(map);
+  if (name) {
+    marker.bindTooltip(name, {});
+    if (cfg.url && cfg.key) {
+      marker.on('click', () => showSiteAnalysis(name));
+    }
+  }
+}
+
+function updateMap(dive) {
+  if (pendingMarker) { map.removeLayer(pendingMarker); pendingMarker = null; }
+  const hintEl    = document.getElementById('site-hint');
+  const hintText  = document.getElementById('site-hint-text');
+  const labelEl   = document.getElementById('map-panel-label');
+
+  if (dive.location) {
+    const icon = L.divIcon({
+      html: '<div style="width:12px;height:12px;border-radius:50%;background:#00d4ff;border:2px solid white;box-shadow:0 0 10px rgba(0,212,255,0.7);"></div>',
+      className: '', iconAnchor: [6, 6]
+    });
+    pendingMarker = L.marker([dive.location.lat, dive.location.lng], { icon }).addTo(map);
+    map.setView([dive.location.lat, dive.location.lng], 9, { animate: true });
+    document.getElementById('coords').textContent = dive.location.name || (dive.location.lat.toFixed(5) + ', ' + dive.location.lng.toFixed(5));
+    document.getElementById('coords').className = 'coords set';
+    document.getElementById('clear-loc-btn').disabled = false;
+    document.getElementById('save-loc-btn').disabled = true;
+
+    // Show site analysis hint if Supabase is configured
+    if (dive.location.name && cfg.url && cfg.key) {
+      currentSiteName = dive.location.name;
+      hintText.textContent = dive.location.name;
+      hintEl.style.display = 'block';
+    } else {
+      hintEl.style.display = 'none';
+    }
+  } else {
+    document.getElementById('coords').textContent = 'Click map to tag this dive';
+    document.getElementById('coords').className = 'coords';
+    document.getElementById('save-loc-btn').disabled = true;
+    document.getElementById('clear-loc-btn').disabled = true;
+    hintEl.style.display = 'none';
+    currentSiteName = null;
+  }
+}
+
+function saveLocation() {
+  if (selectedIdx === null || !pendingMarker) return;
+  const { lat, lng } = pendingMarker.getLatLng();
+  fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat=' + lat + '&lon=' + lng)
+    .then(r => r.json())
+    .then(d => {
+      const name = d.display_name ? d.display_name.split(',').slice(0, 3).join(', ') : (lat.toFixed(4) + ', ' + lng.toFixed(4));
+      dives[selectedIdx].location = { lat, lng, name };
+      renderList();
+      toast('Location saved: ' + name, 'ok');
+      document.getElementById('coords').textContent = name;
+      document.getElementById('save-loc-btn').disabled = true;
+    })
+    .catch(() => {
+      dives[selectedIdx].location = { lat, lng, name: lat.toFixed(4) + ', ' + lng.toFixed(4) };
+      renderList();
+      toast('Location saved', 'ok');
+      document.getElementById('save-loc-btn').disabled = true;
+    });
+}
+
+function clearLocation() {
+  if (selectedIdx === null) return;
+  dives[selectedIdx].location = null;
+  if (pendingMarker) { map.removeLayer(pendingMarker); pendingMarker = null; }
+  document.getElementById('coords').textContent = 'Click map to tag this dive';
+  document.getElementById('coords').className = 'coords';
+  document.getElementById('save-loc-btn').disabled = true;
+  document.getElementById('clear-loc-btn').disabled = true;
+  renderList();
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+function exportLog() {
+  if (!dives.length) { toast('No dives to export', 'warn'); return; }
+  const blob = new Blob([JSON.stringify(dives, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'dive-log-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.click();
+  toast('Log exported', 'ok');
+}
+
+// ─── Toast ────────────────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (type ? ' ' + type : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3400);
+}
+
+// ─── File drop ────────────────────────────────────────────────────────────────
+const dz = document.getElementById('drop-zone');
+document.getElementById('file-input').addEventListener('change', e => [...e.target.files].forEach(handleFile));
+dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); [...e.dataTransfer.files].forEach(handleFile); });
+
+// ─── Bridge (Android native or HTTP fallback) ─────────────────────────────────
+//
+// When running inside the Android app, window.AndroidBridge is injected by
+// MainActivity. We use it directly — no HTTP needed.
+// When opened in a desktop browser, falls back to the Python/Kotlin HTTP bridge.
+
+const isAndroid = () => !!(window.AndroidBridge);
+
+let _bridgePollTimer = null;
+
+function bridgeUrl() {
+  return (document.getElementById('bridge-url')?.value || 'http://127.0.0.1:8765').trim().replace(/\/$/, '');
+}
+
+function bridgeLog(msg, cls) {
+  const el = document.getElementById('bridge-log');
+  if (!el) return;
+  const line = document.createElement('div');
+  line.textContent = msg;
+  if (cls) line.style.color = cls === 'ok' ? 'var(--green)' : cls === 'err' ? 'var(--coral)' : 'var(--muted)';
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+
+function bridgeSetProgress(pct, msg) {
+  const wrap = document.getElementById('bridge-progress-wrap');
+  const bar  = document.getElementById('bridge-progress-bar');
+  const txt  = document.getElementById('bridge-status-text');
+  if (!wrap) return;
+  wrap.style.display = 'block';
+  if (bar) bar.style.width = pct + '%';
+  if (txt) txt.textContent = msg || '';
+}
+
+async function bridgeCheck() {
+  if (isAndroid()) {
+    const running = window.AndroidBridge.isBridgeRunning();
+    bridgeLog(running ? '✓ Android bridge running' : '✗ Bridge not running', running ? 'ok' : 'err');
+    toast(running ? 'Bridge ready' : 'Bridge not running', running ? 'ok' : 'warn');
+    return;
+  }
+  bridgeLog('Checking bridge at ' + bridgeUrl() + '...', '');
+  try {
+    const r = await fetch(bridgeUrl() + '/health', { signal: AbortSignal.timeout(3000) });
+    const d = await r.json();
+    bridgeLog(d.ok ? '✓ Bridge reachable. backend: ' + d.dctool : 'Unexpected response', d.ok ? 'ok' : 'err');
+    if (d.ok) toast('Bridge connected', 'ok');
+  } catch(e) {
+    bridgeLog('✗ ' + e.message, 'err');
+    toast('Bridge not reachable', 'warn');
+  }
+}
+
+// Per-computer start hints shown immediately in the log
+const COMPUTER_START_HINTS = {
+  shearwater: '📡 Put Shearwater in Bluetooth mode first, then press Download.',
+  suunto:     '📡 Suunto: Settings → Connectivity → Airplane Mode OFF. A passkey will appear on the device screen — confirm it on your phone.',
+  hw_ostc:    '📡 OSTC: go to Bluetooth in the menu and activate BLE mode.',
+  cressi:     '📡 Cressi: activate Bluetooth from device settings.',
+  mares:      '📡 Mares: activate Bluetooth from the main menu.',
+  pelagic:    '📡 Oceanic/Aqualung: enable Bluetooth in device settings.',
+  scubapro:   '📡 ScubaPro: enable Bluetooth in the device menu.',
+  divesoft:   '📡 Divesoft: enable Bluetooth from the menu.',
+};
+
+let _lastLoggedMsg = '';   // deduplicate consecutive identical log lines
+let _scanStartTime  = 0;
+
+async function bridgeDownload() {
+  const btn     = document.getElementById('bridge-dl-btn');
+  const address = document.getElementById('bridge-address')?.value.trim() || '';
+  btn.disabled  = true;
+  document.getElementById('bridge-log').innerHTML = '';
+  _lastLoggedMsg = '';
+  _scanStartTime = Date.now();
+
+  // Show computer-specific preparation hint
+  const hint = COMPUTER_START_HINTS[selectedComputer] || '📡 Make sure Bluetooth is active on the dive computer.';
+  bridgeLog(hint, 'info');
+
+  if (isAndroid()) {
+    const username = cfg.username || window.AndroidBridge.getUsername() || 'anonymous';
+    window.AndroidBridge.startDownload(username, address);
+    _startBridgePoll();
+    return;
+  }
+
+  try {
+    const r = await fetch(bridgeUrl() + '/download', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ username: cfg.username || 'anonymous', address: address || null }),
+      signal:  AbortSignal.timeout(5000),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: r.statusText }));
+      bridgeLog('✗ ' + (err.error || r.statusText), 'err');
+      btn.disabled = false;
+      return;
+    }
+    _startBridgePoll();
+  } catch(e) {
+    bridgeLog('✗ Could not reach bridge: ' + e.message, 'err');
+    btn.disabled = false;
+  }
+}
+
+function _startBridgePoll() {
+  if (_bridgePollTimer) clearInterval(_bridgePollTimer);
+  _bridgePollTimer = setInterval(_pollBridge, 500);
+}
+
+async function _pollBridge() {
+  try {
+    let s;
+    if (isAndroid()) {
+      s = JSON.parse(window.AndroidBridge.getBridgeStatus());
+    } else {
+      const r = await fetch(bridgeUrl() + '/status', { signal: AbortSignal.timeout(3000) });
+      s = await r.json();
+    }
+
+    const msg = s.message || '';
+    bridgeSetProgress(s.progress || 0, msg);
+
+    // Log only when message changes, to avoid flooding
+    if (msg && msg !== _lastLoggedMsg) {
+      _lastLoggedMsg = msg;
+      const elapsed = Math.round((Date.now() - _scanStartTime) / 1000);
+      const prefix  = elapsed > 1 ? `[${elapsed}s] ` : '';
+      if (s.status === 'done' || s.status === 'error') {
+        // handled below
+      } else {
+        bridgeLog(prefix + msg, s.status === 'scanning' ? 'info' : '');
+      }
+    }
+
+    if (s.status === 'done') {
+      clearInterval(_bridgePollTimer);
+      bridgeLog('✓ ' + s.message, 'ok');
+      document.getElementById('bridge-dl-btn').disabled = false;
+      toast(s.message, 'ok');
+      if (isAndroid()) window.AndroidBridge.resetBridge();
+      else fetch(bridgeUrl() + '/reset', { method: 'POST' }).catch(() => {});
+      if (s.dives && s.dives.length) {
+        const newDives = s.dives.map((d, i) => ({
+          source: d.source || 'Suunto', number: dives.length + i + 1,
+          name: d.name || null, date: d.date,
+          maxDepth: d.max_depth_m || 0, duration: d.duration_s || 0,
+          minTemp: d.min_temp_c ?? null, avgTemp: d.avg_temp_c ?? null,
+          profile: [], profilePending: true, location: null,
+          uploadId: 'bridge', uploadStatus: 'ok',
+        }));
+        dives.push(...newDives);
+        renderList();
+      }
+    } else if (s.status === 'error') {
+      clearInterval(_bridgePollTimer);
+      const errMsg = s.last_error || s.message || 'Unknown error';
+      bridgeLog('✗ ' + errMsg, 'err');
+      // Show computer-specific recovery tip
+      const tip = _recoveryTip(errMsg);
+      if (tip) bridgeLog('💡 ' + tip, 'info');
+      document.getElementById('bridge-dl-btn').disabled = false;
+      bridgeSetProgress(0, 'Failed');
+      toast('Error: ' + errMsg.slice(0, 60), 'warn');
+    }
+  } catch(e) {
+    // silently ignore transient fetch/parse errors
+  }
+}
+
+function _recoveryTip(errMsg) {
+  const e = errMsg.toLowerCase();
+  if (e.includes('no dive computers found') || e.includes('scan'))
+    return 'Make sure the dive computer is in Bluetooth mode and within 30 cm.';
+  if (e.includes('133') || e.includes('gatt') || e.includes('connection'))
+    return 'GATT connection failed. Move closer and try again, or restart Bluetooth on your phone.';
+  if (e.includes('service not found'))
+    return 'Connected but wrong service. The device may not be in download mode.';
+  if (e.includes('timed out') || e.includes('timeout'))
+    return 'Operation timed out. Check that the dive computer is awake and in range.';
+  if (e.includes('passkey') || e.includes('pairing'))
+    return 'Check the dive computer screen for a passkey and confirm the pairing on your phone.';
+  if (e.includes('bluetooth is off'))
+    return 'Enable Bluetooth in your phone settings.';
+  return null;
+}
+
+// ─── Cloud / Supabase ─────────────────────────────────────────────────────────
+
+const SCHEMA_SQL = `-- Run this once in your Supabase SQL editor
+-- Table: one row per dive (metadata + aggregated stats)
+CREATE TABLE IF NOT EXISTS dives (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username      TEXT NOT NULL,
+  computer      TEXT,
+  dive_number   INT,
+  name          TEXT,
+  dived_at      TIMESTAMPTZ,
+  max_depth_m   FLOAT,
+  duration_s    INT,
+  min_temp_c    FLOAT,
+  avg_temp_c    FLOAT,
+  site_name     TEXT,
+  lat           FLOAT,
+  lng           FLOAT,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- Table: per-sample profile data (depth + temp every N seconds)
+CREATE TABLE IF NOT EXISTS dive_samples (
+  id          BIGSERIAL PRIMARY KEY,
+  dive_id     UUID REFERENCES dives(id) ON DELETE CASCADE,
+  username    TEXT NOT NULL,
+  dived_at    TIMESTAMPTZ,
+  site_name   TEXT,
+  lat         FLOAT,
+  lng         FLOAT,
+  time_s      INT,
+  depth_m     FLOAT,
+  temp_c      FLOAT
+);
+
+-- Index for fast site+time queries
+CREATE INDEX IF NOT EXISTS idx_samples_site_time
+  ON dive_samples (site_name, dived_at);
+
+CREATE INDEX IF NOT EXISTS idx_samples_latlon
+  ON dive_samples (lat, lng);
+
+-- Enable Row Level Security (optional but recommended for multi-user)
+ALTER TABLE dives        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dive_samples ENABLE ROW LEVEL SECURITY;
+
+-- Allow all authenticated and anon users to read/write their own rows
+-- (simple open policy — tighten per your needs)
+CREATE POLICY "anon read"  ON dives        FOR SELECT USING (true);
+CREATE POLICY "anon write" ON dives        FOR INSERT WITH CHECK (true);
+CREATE POLICY "anon read"  ON dive_samples FOR SELECT USING (true);
+CREATE POLICY "anon write" ON dive_samples FOR INSERT WITH CHECK (true);`;
+
+let cfg = { url: '', key: '', username: '' };
+
+function loadConfig() {
+  try {
+    const saved = localStorage.getItem('deeplog_cfg');
+    if (saved) { cfg = { ...cfg, ...JSON.parse(saved) }; }
+  } catch(e) {}
+  updateCloudUI();
+}
+
+function saveSettings() {
+  cfg.url      = document.getElementById('cfg-url').value.trim().replace(/\/$/, '');
+  cfg.key      = document.getElementById('cfg-key').value.trim();
+  cfg.username = document.getElementById('cfg-username').value.trim().toLowerCase().replace(/\s+/g, '_') || 'anonymous';
+  localStorage.setItem('deeplog_cfg', JSON.stringify(cfg));
+  if (window.AndroidBridge) AndroidBridge.saveSupabaseConfig(cfg.url, cfg.key);
+  if (window.AndroidBridge) AndroidBridge.saveUsername(cfg.username);
+  updateCloudUI();
+  testConnection();
+}
+
+function updateCloudUI() {
+  const hasConfig = cfg.url && cfg.key;
+  document.getElementById('cloud-bar').style.display = hasConfig ? 'flex' : 'none';
+  document.getElementById('cloud-user-label').textContent = cfg.username || 'anonymous';
+  if (document.getElementById('cfg-url')) {
+    document.getElementById('cfg-url').value = cfg.url;
+    document.getElementById('cfg-key').value = cfg.key;
+    document.getElementById('cfg-username').value = cfg.username;
+    document.getElementById('schema-sql').value = SCHEMA_SQL;
+  }
+}
+
+function openSettings() {
+  updateCloudUI();
+  document.getElementById('modal-overlay').classList.add('show');
+}
+function closeSettings() {
+  document.getElementById('modal-overlay').classList.remove('show');
+}
+function closeSettingsOutside(e) {
+  if (e.target === document.getElementById('modal-overlay')) closeSettings();
+}
+
+async function supaFetch(path, method, body) {
+  const resp = await fetch(cfg.url + '/rest/v1/' + path, {
+    method: method || 'GET',
+    headers: {
+      'apikey':        cfg.key,
+      'Authorization': 'Bearer ' + cfg.key,
+      'Content-Type':  'application/json',
+      'Prefer':        method === 'POST' ? 'return=representation' : '',
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(resp.status + ' ' + txt.slice(0, 120));
+  }
+  return resp.status === 204 ? null : resp.json();
+}
+
+async function testConnection() {
+  const statusEl = document.getElementById('conn-status');
+  statusEl.classList.remove('show');
+  statusEl.style.color = '';
+  if (!cfg.url || !cfg.key) { toast('Fill in URL and key first', 'warn'); return; }
+  try {
+    await supaFetch('dives?limit=1');
+    statusEl.textContent = '✓ Connected';
+    statusEl.style.color = 'var(--green)';
+    statusEl.classList.add('show');
+    toast('Connected to Supabase', 'ok');
+  } catch(err) {
+    statusEl.textContent = '✗ ' + err.message.slice(0, 40);
+    statusEl.style.color = 'var(--coral)';
+    statusEl.classList.add('show');
+    toast('Connection failed: ' + err.message.slice(0, 60), 'warn');
+  }
+}
+
+// Upload a single dive (metadata + all samples)
+async function uploadDive(idx) {
+  if (!cfg.url || !cfg.key) { openSettings(); return; }
+  const dive = dives[idx];
+  if (dive.uploadId) { toast('Already uploaded', 'ok'); return; }
+
+  dive.uploadStatus = 'pending';
+  renderList();
+
+  try {
+    // 1. Insert dive metadata row
+    const diveRow = {
+      username:    cfg.username,
+      computer:    dive.source,
+      dive_number: dive.number,
+      name:        dive.name || null,
+      dived_at:    dive.date ? new Date(dive.date).toISOString() : null,
+      max_depth_m: dive.maxDepth,
+      duration_s:  dive.duration,
+      min_temp_c:  dive.minTemp ?? null,
+      avg_temp_c:  dive.avgTemp != null ? parseFloat(dive.avgTemp.toFixed(2)) : null,
+      site_name:   dive.location?.name || null,
+      lat:         dive.location?.lat  || null,
+      lng:         dive.location?.lng  || null,
+    };
+    const [inserted] = await supaFetch('dives', 'POST', diveRow);
+    const diveId = inserted.id;
+
+    // 2. Insert profile samples in chunks of 500 (Supabase row limit per request)
+    const samples = (dive.profile || [])
+      .filter(p => p.depth != null)
+      .map(p => ({
+        dive_id:  diveId,
+        username: cfg.username,
+        dived_at: dive.date ? new Date(dive.date).toISOString() : null,
+        site_name: dive.location?.name || null,
+        lat:       dive.location?.lat  || null,
+        lng:       dive.location?.lng  || null,
+        time_s:   p.time,
+        depth_m:  parseFloat(p.depth.toFixed(2)),
+        temp_c:   (p.temp != null && p.temp > -50 && p.temp < 50)
+                    ? parseFloat(p.temp.toFixed(2)) : null,
+      }));
+
+    for (let i = 0; i < samples.length; i += 500) {
+      await supaFetch('dive_samples', 'POST', samples.slice(i, i + 500));
+    }
+
+    dive.uploadId     = diveId;
+    dive.uploadStatus = 'ok';
+    renderList();
+    toast('Dive #' + dive.number + ' uploaded (' + samples.length + ' samples)', 'ok');
+
+  } catch(err) {
+    dive.uploadStatus = 'error';
+    dive.uploadError  = err.message;
+    renderList();
+    toast('Upload failed: ' + err.message.slice(0, 60), 'warn');
+  }
+}
+
+async function uploadAllDives() {
+  if (!cfg.url || !cfg.key) { openSettings(); return; }
+  const pending = dives.map((d, i) => i).filter(i => !dives[i].uploadId);
+  if (!pending.length) { toast('All dives already uploaded', 'ok'); return; }
+  toast('Uploading ' + pending.length + ' dives...', '');
+  let ok = 0;
+  for (const idx of pending) {
+    await uploadDive(idx);
+    if (dives[idx].uploadStatus === 'ok') ok++;
+  }
+  toast('Upload complete: ' + ok + '/' + pending.length + ' dives', 'ok');
+}
+
+// ─── Site Temperature Analysis ────────────────────────────────────────────────
+
+let siteTempChart = null;
+let currentSiteName = null;
+let siteAllSamples = []; // all fetched samples for current site
+let activeDepthBin = 'all';
+
+const DEPTH_BINS = [
+  { label: 'All depths', key: 'all',   min: 0,  max: 999 },
+  { label: '0–5 m',      key: '0-5',   min: 0,  max: 5   },
+  { label: '5–15 m',     key: '5-15',  min: 5,  max: 15  },
+  { label: '15–30 m',    key: '15-30', min: 15, max: 30  },
+  { label: '>30 m',      key: '30+',   min: 30, max: 999  },
+];
+
+const SEASON_MONTHS = {
+  Winter: [12, 1, 2],
+  Spring: [3, 4, 5],
+  Summer: [6, 7, 8],
+  Autumn: [9, 10, 11],
+};
+
+function tempColor(t) {
+  if (t < 10) return '#7EC8E3';
+  if (t < 15) return '#00d4ff';
+  if (t < 20) return '#26de81';
+  if (t < 25) return '#ff9f43';
+  return '#ff6b6b';
+}
+
+async function showSiteAnalysis(siteName) {
+  if (!siteName || !cfg.url || !cfg.key) {
+    if (!cfg.url || !cfg.key) toast('Configure Supabase to view site data', 'warn');
+    return;
+  }
+
+  currentSiteName = siteName;
+  activeDepthBin = 'all';
+
+  // Switch views
+  document.getElementById('map-tag-view').style.display = 'none';
+  const analysisView = document.getElementById('site-analysis-view');
+  analysisView.style.display = 'flex';
+
+  document.getElementById('site-name-title').textContent = siteName;
+  document.getElementById('site-meta').textContent = 'Loading…';
+  document.getElementById('site-spinner').style.display = 'block';
+  document.getElementById('season-row').innerHTML = '';
+  document.getElementById('depth-tabs').innerHTML = '';
+  document.getElementById('site-contributors').textContent = '';
+  document.getElementById('site-no-data').style.display = 'none';
+
+  if (siteTempChart) { siteTempChart.destroy(); siteTempChart = null; }
+
+  try {
+    // Fetch all samples for this site that have temperature data
+    // Use Supabase REST filtering: site_name=eq.X&temp_c=not.is.null&order=dived_at
+    const params = new URLSearchParams({
+      site_name: 'eq.' + siteName,
+      temp_c:    'not.is.null',
+      select:    'dived_at,depth_m,temp_c,username',
+      order:     'dived_at.asc',
+      limit:     '5000',
+    });
+
+    const samples = await supaFetch('dive_samples?' + params.toString());
+    siteAllSamples = samples || [];
+
+    const diveParams = new URLSearchParams({
+      site_name: 'eq.' + siteName,
+      select:    'dived_at,username,max_depth_m',
+    });
+    const diveMeta = await supaFetch('dives?' + diveParams.toString());
+
+    document.getElementById('site-spinner').style.display = 'none';
+
+    if (!siteAllSamples.length) {
+      document.getElementById('site-meta').textContent =
+        (diveMeta?.length || 0) + ' dives · no temperature samples yet';
+      document.getElementById('site-no-data').style.display = 'flex';
+      return;
+    }
+
+    // Unique contributors
+    const contributors = [...new Set(siteAllSamples.map(s => s.username).filter(Boolean))];
+    const diveCount    = diveMeta?.length || 0;
+    document.getElementById('site-meta').textContent =
+      diveCount + ' dive' + (diveCount !== 1 ? 's' : '') +
+      ' · ' + contributors.length + ' diver' + (contributors.length !== 1 ? 's' : '') +
+      ' · ' + siteAllSamples.length.toLocaleString() + ' samples';
+
+    // Contributors pill list
+    document.getElementById('site-contributors').innerHTML =
+      '&#x1F4E1; Contributors: ' +
+      contributors.map(u => '<span style="color:var(--accent);margin-right:0.5rem">' + u + '</span>').join('');
+
+    // Build depth tabs
+    const dtEl = document.getElementById('depth-tabs');
+    dtEl.innerHTML = '';
+    DEPTH_BINS.forEach(bin => {
+      const count = siteAllSamples.filter(s => s.depth_m >= bin.min && s.depth_m < bin.max).length;
+      if (count === 0 && bin.key !== 'all') return;
+      const btn = document.createElement('button');
+      btn.className = 'depth-tab' + (bin.key === 'all' ? ' active' : '');
+      btn.textContent = bin.label;
+      btn.onclick = () => {
+        activeDepthBin = bin.key;
+        document.querySelectorAll('.depth-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderSiteChart(siteAllSamples, bin);
+      };
+      dtEl.appendChild(btn);
+    });
+
+    // Season stats
+    renderSeasonStats(siteAllSamples);
+
+    // Chart
+    renderSiteChart(siteAllSamples, DEPTH_BINS[0]);
+
+  } catch (err) {
+    document.getElementById('site-spinner').style.display = 'none';
+    document.getElementById('site-meta').textContent = 'Error: ' + err.message.slice(0, 60);
+    toast('Could not load site data: ' + err.message.slice(0, 60), 'warn');
+  }
+}
+
+function renderSeasonStats(samples) {
+  const srEl = document.getElementById('season-row');
+  srEl.innerHTML = '';
+  Object.entries(SEASON_MONTHS).forEach(([name, months]) => {
+    const temps = samples
+      .filter(s => {
+        if (!s.dived_at) return false;
+        const m = new Date(s.dived_at).getMonth() + 1;
+        return months.includes(m) && s.temp_c != null && s.temp_c > -5 && s.temp_c < 50;
+      })
+      .map(s => s.temp_c);
+    const avg = temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : null;
+    srEl.innerHTML +=
+      '<div class="season-card">' +
+        '<div class="s-label">' + name + '</div>' +
+        '<div class="s-temp" style="color:' + (avg ? tempColor(avg) : 'var(--muted)') + '">' +
+          (avg ? avg.toFixed(1) + '°' : '—') +
+        '</div>' +
+        '<div class="s-count">' + temps.length + ' pts</div>' +
+      '</div>';
+  });
+}
+
+function renderSiteChart(samples, bin) {
+  const filtered = samples.filter(s =>
+    s.depth_m >= bin.min && s.depth_m < bin.max &&
+    s.temp_c != null && s.temp_c > -5 && s.temp_c < 50 && s.dived_at
+  );
+
+  const canvas = document.getElementById('site-temp-chart');
+  if (siteTempChart) { siteTempChart.destroy(); siteTempChart = null; }
+
+  if (filtered.length === 0) {
+    document.getElementById('site-no-data').style.display = 'flex';
+    return;
+  }
+  document.getElementById('site-no-data').style.display = 'none';
+
+  // Scatter points — coloured by depth
+  const scatterData = filtered.map(s => ({
+    x: new Date(s.dived_at).getTime(),
+    y: s.temp_c,
+    depth: s.depth_m,
+  }));
+
+  // 30-day rolling median
+  const sorted  = [...scatterData].sort((a, b) => a.x - b.x);
+  const windowMs = 30 * 24 * 3600 * 1000;
+  const rollingData = sorted.map((pt, i) => {
+    const win = sorted.filter(p => Math.abs(p.x - pt.x) <= windowMs / 2).map(p => p.y).sort((a,b) => a-b);
+    return { x: pt.x, y: win[Math.floor(win.length / 2)] };
+  });
+
+  const ctx = canvas.getContext('2d');
+  siteTempChart = new Chart(ctx, {
+    type: 'scatter',
+    data: {
+      datasets: [
+        {
+          label: 'Temperature',
+          data: scatterData,
+          backgroundColor: ctx2 => {
+            const d = ctx2.raw?.depth ?? 0;
+            const frac = Math.min(d / 40, 1);
+            // shallow=warm orange, deep=cool cyan
+            const r = Math.round(255 * (1 - frac) + 0 * frac);
+            const g = Math.round(159 * (1 - frac) + 212 * frac);
+            const b = Math.round(67 * (1 - frac) + 255 * frac);
+            return 'rgba(' + r + ',' + g + ',' + b + ',0.55)';
+          },
+          pointRadius: 3.5, pointHoverRadius: 5,
+          order: 2,
+        },
+        {
+          label: '30-day median',
+          data: rollingData,
+          type: 'line',
+          borderColor: 'rgba(255,255,255,0.7)',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: false,
+          tension: 0.4,
+          spanGaps: true,
+          order: 1,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: '#3d6b8a', font: { family: "'IBM Plex Mono'", size: 9 }, boxWidth: 20, padding: 8 }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(3,21,37,0.95)',
+          borderColor: 'rgba(0,212,255,0.2)', borderWidth: 1,
+          titleColor: '#3d6b8a', bodyColor: '#b8daf0',
+          titleFont: { family: "'IBM Plex Mono'", size: 9 },
+          bodyFont:  { family: "'IBM Plex Mono'", size: 10 },
+          callbacks: {
+            title: items => {
+              const d = new Date(items[0].raw.x);
+              return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+            },
+            label: item => {
+              if (item.datasetIndex === 0)
+                return 'Temp: ' + item.raw.y.toFixed(1) + '°C  depth: ' + (item.raw.depth?.toFixed(1) ?? '?') + 'm';
+              return '30d median: ' + item.raw.y.toFixed(1) + '°C';
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          min: scatterData.length ? Math.min(...scatterData.map(d=>d.x)) : undefined,
+          max: scatterData.length ? Math.max(...scatterData.map(d=>d.x)) : undefined,
+          grid: { color: 'rgba(0,212,255,0.04)' },
+          ticks: {
+            color: '#3d6b8a',
+            font: { family: "'IBM Plex Mono'", size: 9 },
+            maxTicksLimit: 6,
+            callback: v => {
+              const d = new Date(v);
+              return d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+            }
+          }
+        },
+        y: {
+          grid: { color: 'rgba(0,212,255,0.04)' },
+          ticks: { color: '#3d6b8a', font: { family: "'IBM Plex Mono'", size: 9 }, callback: v => v.toFixed(0) + '°' },
+          title: { display: true, text: 'Temp °C', color: '#3d6b8a', font: { family: "'IBM Plex Mono'", size: 8 } }
+        }
+      },
+      animation: { duration: 400 }
+    }
+  });
+}
+
+function closeSiteAnalysis() {
+  document.getElementById('site-analysis-view').style.display = 'none';
+  document.getElementById('map-tag-view').style.display = 'block';
+  if (siteTempChart) { siteTempChart.destroy(); siteTempChart = null; }
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+loadConfig();
+initMap();
+</script>
+</body>
+</html>

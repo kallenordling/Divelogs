@@ -1,0 +1,4 @@
+/home/nordling/Documents/Divelogs/app/.cxx/Debug/3m6ho574/x86_64/CMakeFiles/divecomputer.dir
+/home/nordling/Documents/Divelogs/app/.cxx/Debug/3m6ho574/x86_64/CMakeFiles/deeplog.dir
+/home/nordling/Documents/Divelogs/app/.cxx/Debug/3m6ho574/x86_64/CMakeFiles/edit_cache.dir
+/home/nordling/Documents/Divelogs/app/.cxx/Debug/3m6ho574/x86_64/CMakeFiles/rebuild_cache.dir

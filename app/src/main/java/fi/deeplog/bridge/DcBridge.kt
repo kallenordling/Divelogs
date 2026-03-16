@@ -7,8 +7,9 @@ object DcBridge {
     @JvmStatic external fun onBleData(data: ByteArray)
 
     // Starts a blocking download. Returns a JSON array of dives.
-    // deviceName  — advertised BLE name (used for descriptor matching)
-    // transport   — DC_TRANSPORT_BLE = 5
+    // deviceName   — advertised BLE name (used for descriptor matching)
+    // transport    — DC_TRANSPORT_BLE = 5
     // bleTransport — object with write(ByteArray):Boolean and ioctl(Int, ByteArray) methods
-    @JvmStatic external fun download(deviceName: String, transport: Int, bleTransport: BleTransport): String
+    // fingerprint  — bytes of the last-downloaded dive's fingerprint, or null for full download
+    @JvmStatic external fun download(deviceName: String, transport: Int, bleTransport: BleTransport, fingerprint: ByteArray?): String
 }

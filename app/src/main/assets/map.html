@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0D1B2A; }
+  #map { width: 100%; height: 100vh; }
+  #hint {
+    position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(30,136,229,0.92); color: white;
+    padding: 8px 18px; border-radius: 20px; font-size: 14px;
+    display: none; pointer-events: none; z-index: 9999;
+    font-family: sans-serif; white-space: nowrap;
+  }
+  .popup-btn {
+    background: #1E88E5; color: white; border: none;
+    padding: 7px 16px; border-radius: 8px; font-size: 14px;
+    cursor: pointer; margin-top: 8px; display: block; width: 100%;
+  }
+  .popup-btn:active { background: #1565C0; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="hint">Tap the map to place a site</div>
+<script>
+var map = L.map('map', { zoomControl: true }).setView([64.24, 26.09], 5);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>',
+  maxZoom: 19
+}).addTo(map);
+
+var addMode = false;
+var pendingMarker = null;
+var hint = document.getElementById('hint');
+
+function enableAddMode() {
+  addMode = true;
+  hint.style.display = 'block';
+  map.getContainer().style.cursor = 'crosshair';
+}
+
+function escJ(s) {
+  return s.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"');
+}
+
+function makeMarker(lat, lon, color) {
+  return L.divIcon({
+    html: '<div style="background:' + color + ';width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 4px rgba(0,0,0,0.6)"></div>',
+    iconSize: [14, 14], iconAnchor: [7, 7], popupAnchor: [0, -10], className: ''
+  });
+}
+
+function makePopup(name, lat, lon, subtitle) {
+  return '<div style="font-family:sans-serif;min-width:130px">'
+    + '<b style="font-size:14px">' + name + '</b>'
+    + (subtitle ? '<br/><small style="color:#888">' + subtitle + '</small>' : '')
+    + '<br/><button class="popup-btn" onclick="selectSite(\'' + escJ(name) + '\',' + lat + ',' + lon + ')">✓ Select this site</button>'
+    + '</div>';
+}
+
+// Blue — locally saved sites
+function addSiteMarker(name, lat, lon) {
+  L.marker([lat, lon], {icon: makeMarker(lat, lon, '#4FC3F7')})
+    .bindPopup(makePopup(name, lat, lon, lat.toFixed(5) + '°N, ' + lon.toFixed(5) + '°E'))
+    .addTo(map);
+}
+
+// Green — sites from Google My Maps
+function addRemoteSiteMarker(name, lat, lon) {
+  L.marker([lat, lon], {icon: makeMarker(lat, lon, '#66BB6A')})
+    .bindPopup(makePopup(name, lat, lon, 'From dive site map'))
+    .addTo(map);
+}
+
+function selectSite(name, lat, lon) {
+  if (typeof Android !== 'undefined') Android.onSiteSelected(name, lat, lon);
+}
+
+function flyToSite(lat, lon) {
+  map.flyTo([lat, lon], 14);
+}
+
+map.on('click', function(e) {
+  if (!addMode) return;
+  addMode = false;
+  hint.style.display = 'none';
+  map.getContainer().style.cursor = '';
+  if (pendingMarker) { map.removeLayer(pendingMarker); }
+  var icon = L.divIcon({
+    html: '<div style="background:#FF9800;width:16px;height:16px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(0,0,0,0.6)"></div>',
+    iconSize: [16, 16], iconAnchor: [8, 8], className: ''
+  });
+  pendingMarker = L.marker(e.latlng, {icon: icon}).addTo(map);
+  if (typeof Android !== 'undefined') Android.onMapTapped(e.latlng.lat, e.latlng.lng);
+});
+</script>
+</body>
+</html>
