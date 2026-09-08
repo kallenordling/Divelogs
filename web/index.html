@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>DeepLog</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+
+<style>
+  :root {
+    --bg:        #0a1420;
+    --panel:     #0d1b2a;
+    --card:      #14283f;
+    --card-hi:   #1a3a5a;
+    --border:    #23415e;
+    --text:      #e8eef4;
+    --muted:     #8fb0c8;
+    --dim:       #5f7f96;
+    --accent:    #4fc3f7;
+    --warm:      #ffb74d;
+    --bad:       #ef5350;
+    --ok:        #66bb6a;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+  button {
+    font: inherit; cursor: pointer; border: 0; border-radius: 8px;
+    padding: 10px 16px; background: var(--accent); color: #04202e; font-weight: 600;
+  }
+  button:hover  { filter: brightness(1.1); }
+  button:disabled { opacity: .5; cursor: default; filter: none; }
+  button.ghost {
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--border); font-weight: 500;
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--accent); }
+  input {
+    font: inherit; width: 100%; padding: 11px 13px; border-radius: 8px;
+    border: 1px solid var(--border); background: #0b1a2b; color: var(--text);
+  }
+  input:focus { outline: 0; border-color: var(--accent); }
+  a { color: var(--accent); }
+
+  .hidden { display: none !important; }
+
+  /* ── Login ─────────────────────────────────────────────────────────── */
+  #login-view {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .login-box { width: 100%; max-width: 380px; }
+  .brand { font-size: 34px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 4px; }
+  .brand span { color: var(--accent); }
+  .tagline { color: var(--dim); margin-bottom: 28px; font-size: 14px; }
+  .field { margin-bottom: 12px; }
+  .row-split { display: flex; gap: 10px; margin-top: 16px; }
+  .row-split button { flex: 1; }
+  .msg { margin-top: 14px; font-size: 13px; min-height: 19px; }
+  .msg.err { color: var(--bad); }
+  .msg.ok  { color: var(--ok); }
+
+  /* ── Chrome ────────────────────────────────────────────────────────── */
+  header {
+    position: sticky; top: 0; z-index: 500;
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header .brand { font-size: 20px; margin: 0; }
+  header .spacer { flex: 1; }
+  header .who { color: var(--dim); font-size: 13px; }
+
+  nav { display: flex; gap: 4px; padding: 0 18px; background: var(--panel);
+        border-bottom: 1px solid var(--border); overflow-x: auto; }
+  nav button {
+    background: none; color: var(--muted); border-radius: 0; padding: 12px 14px;
+    border-bottom: 2px solid transparent; font-weight: 500; white-space: nowrap;
+  }
+  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  main { padding: 18px; max-width: 1100px; margin: 0 auto; }
+
+  /* ── Dive list ─────────────────────────────────────────────────────── */
+  .toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .toolbar input { flex: 1; min-width: 200px; }
+
+  .dive-grid { display: grid; gap: 10px; }
+  .dive-card {
+    display: grid; grid-template-columns: 54px 1fr auto; gap: 14px; align-items: center;
+    background: var(--card); border: 1px solid transparent; border-radius: 12px;
+    padding: 14px 16px; cursor: pointer;
+  }
+  .dive-card:hover { background: var(--card-hi); border-color: var(--border); }
+  .dive-num {
+    font-size: 19px; font-weight: 700; color: var(--accent); text-align: center;
+  }
+  .dive-main .site { font-weight: 600; }
+  .dive-main .meta { color: var(--dim); font-size: 13px; }
+  .dive-stats { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dive-stats .depth { font-size: 17px; font-weight: 600; }
+  .dive-stats .dur { color: var(--dim); font-size: 13px; }
+
+  /* ── Stats ─────────────────────────────────────────────────────────── */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { background: var(--card); border-radius: 12px; padding: 16px; }
+  .tile .label { color: var(--dim); font-size: 12px; text-transform: uppercase;
+                 letter-spacing: .06em; margin-bottom: 6px; }
+  .tile .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .value small { font-size: 14px; font-weight: 500; color: var(--muted); }
+
+  /* ── Detail ────────────────────────────────────────────────────────── */
+  .detail-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+  .detail-head h2 { margin: 0; font-size: 22px; }
+  .detail-sub { color: var(--dim); margin-bottom: 18px; }
+
+  .profile-wrap { background: var(--panel); border-radius: 12px; padding: 8px; margin-bottom: 18px; }
+  .profile-wrap svg { display: block; width: 100%; height: auto; }
+  .legend { display: flex; gap: 18px; justify-content: center; font-size: 12px;
+            color: var(--muted); padding: 6px 0 2px; }
+  .legend i { display: inline-block; width: 11px; height: 3px; border-radius: 2px;
+              vertical-align: middle; margin-right: 5px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-weight: 500; font-size: 12px;
+       text-transform: uppercase; letter-spacing: .05em; }
+  td { font-variant-numeric: tabular-nums; }
+
+  h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--muted); margin: 24px 0 8px; }
+
+  #map { height: 460px; border-radius: 12px; }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card); color: var(--text); }
+
+  .empty { color: var(--dim); text-align: center; padding: 48px 20px; }
+
+  .note { color: var(--dim); font-size: 12px; margin-top: 20px; line-height: 1.6; }
+
+  @media (max-width: 560px) {
+    main { padding: 12px; }
+    .dive-card { grid-template-columns: 40px 1fr auto; padding: 12px; gap: 10px; }
+    header { padding: 10px 12px; }
+    nav { padding: 0 6px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ─────────────────────────── Login ─────────────────────────── -->
+<div id="login-view">
+  <div class="login-box">
+    <div class="brand">Deep<span>Log</span></div>
+    <div class="tagline">Sign in with your DeepLog account — the same email and
+      password you use in the phone app.</div>
+
+    <div class="field"><input id="email" type="email" placeholder="Email" autocomplete="username"></div>
+    <div class="field"><input id="password" type="password" placeholder="Password" autocomplete="current-password"></div>
+
+    <div class="row-split">
+      <button class="ghost" id="btn-signup">Create account</button>
+      <button id="btn-signin">Sign in</button>
+    </div>
+    <div class="msg" id="login-msg"></div>
+  </div>
+</div>
+
+<!-- ─────────────────────────── App ─────────────────────────── -->
+<div id="app-view" class="hidden">
+  <header>
+    <div class="brand">Deep<span>Log</span></div>
+    <div class="spacer"></div>
+    <div class="who" id="who"></div>
+    <button class="ghost" id="btn-signout">Sign out</button>
+  </header>
+
+  <nav>
+    <button data-tab="dives" class="active">Dive log</button>
+    <button data-tab="stats">Stats</button>
+    <button data-tab="map">Map</button>
+  </nav>
+
+  <main>
+    <!-- Dive list -->
+    <section id="tab-dives">
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search by site, date or computer…">
+        <button class="ghost" id="btn-refresh">Refresh</button>
+      </div>
+      <div class="dive-grid" id="dive-list"></div>
+    </section>
+
+    <!-- Detail -->
+    <section id="tab-detail" class="hidden">
+      <button class="ghost" id="btn-back" style="margin-bottom:16px">← Back to dive log</button>
+      <div id="detail-body"></div>
+    </section>
+
+    <!-- Stats -->
+    <section id="tab-stats" class="hidden">
+      <div class="tiles" id="stat-tiles"></div>
+      <h3>Dives per year</h3>
+      <div id="per-year"></div>
+    </section>
+
+    <!-- Map -->
+    <section id="tab-map" class="hidden">
+      <div id="map"></div>
+      <div class="note">Only dives that have a saved site with coordinates appear here.</div>
+    </section>
+  </main>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+(() => {
+'use strict';
+
+// ── Backend ────────────────────────────────────────────────────────────────
+// The anon key is a public, publishable identifier — it is already shipped in
+// the Android app. It grants nothing on its own: every read and write is
+// gated by row-level security policies keyed on the signed-in user.
+const SUPABASE_URL = 'https://bdquivweiecffyopsevs.supabase.co';
+const ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9' +
+  '.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkcXVpdndlaWVjZmZ5b3BzZXZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyMTM2MjYsImV4cCI6MjA4Nzc4OTYyNn0' +
+  '.wXLAcj5NeyVnO2nTB5ZzNWwe_hFtPkZYHBKkMT2FmAo';
+
+const STORE_KEY = 'deeplog.session';
+
+// ── Session ────────────────────────────────────────────────────────────────
+
+let session = null;   // { access_token, refresh_token, email, user_id }
+let dives = [];
+
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); }
+  catch { return null; }
+}
+function saveSession(s) {
+  session = s;
+  try {
+    if (s) localStorage.setItem(STORE_KEY, JSON.stringify(s));
+    else localStorage.removeItem(STORE_KEY);
+  } catch { /* private browsing: stay signed in for this tab only */ }
+}
+
+async function authRequest(path, body) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: ANON_KEY },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error_description || data.msg || data.message || `Sign-in failed (${res.status})`);
+  }
+  return data;
+}
+
+function storeAuth(data) {
+  saveSession({
+    access_token:  data.access_token,
+    refresh_token: data.refresh_token,
+    email:         data.user && data.user.email,
+    user_id:       data.user && data.user.id,
+  });
+}
+
+async function signIn(email, password) {
+  storeAuth(await authRequest('token?grant_type=password', { email, password }));
+}
+
+async function signUp(email, password) {
+  const data = await authRequest('signup', { email, password });
+  // A project with email confirmation on returns a user but no session.
+  if (data.access_token) storeAuth(data);
+  return !!data.access_token;
+}
+
+async function refreshSession() {
+  if (!session || !session.refresh_token) return false;
+  try {
+    const data = await authRequest('token?grant_type=refresh_token',
+                                   { refresh_token: session.refresh_token });
+    storeAuth(data);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── REST ───────────────────────────────────────────────────────────────────
+
+async function rest(path, { retry = true } = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers: {
+      apikey: ANON_KEY,
+      Authorization: `Bearer ${session.access_token}`,
+      Accept: 'application/json',
+    },
+  });
+
+  // Access tokens are short-lived; swap in a fresh one and try once more.
+  if (res.status === 401 && retry) {
+    if (await refreshSession()) return rest(path, { retry: false });
+    signOut();
+    throw new Error('Session expired — please sign in again');
+  }
+  if (!res.ok) throw new Error(`Request failed (${res.status})`);
+  return res.json();
+}
+
+const fetchDives = () =>
+  rest('dives?select=*&order=date.desc,time.desc');
+
+// ── Formatting ─────────────────────────────────────────────────────────────
+
+const num = (v, d = 1) => (v === null || v === undefined || isNaN(v)) ? '–' : Number(v).toFixed(d);
+
+function duration(seconds) {
+  if (!seconds) return '–';
+  const m = Math.floor(seconds / 60), s = seconds % 60;
+  if (m < 60) return `${m}:${String(s).padStart(2, '0')}`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
+}
+
+function prettyDate(iso) {
+  if (!iso) return '–';
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Rows arrive as JSON columns; Postgres may hand them back as text.
+function asArray(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') { try { return JSON.parse(v) || []; } catch { return []; } }
+  return [];
+}
+
+// ── Dive list ──────────────────────────────────────────────────────────────
+
+function renderList() {
+  const q = document.getElementById('search').value.trim().toLowerCase();
+  const shown = !q ? dives : dives.filter((d) =>
+    [d.site_name, d.date, d.device_name, d.divemode]
+      .some((f) => String(f ?? '').toLowerCase().includes(q)));
+
+  const list = document.getElementById('dive-list');
+  if (!shown.length) {
+    list.innerHTML = `<div class="empty">${
+      dives.length ? 'No dives match that search.'
+                   : 'No dives yet. Download some in the phone app and they will appear here.'
+    }</div>`;
+    return;
+  }
+
+  // Dive numbers count up from the oldest dive, matching the phone app.
+  const order = new Map();
+  [...dives].reverse().forEach((d, i) => order.set(d, i + 1));
+
+  list.innerHTML = shown.map((d) => `
+    <div class="dive-card" data-idx="${dives.indexOf(d)}">
+      <div class="dive-num">${order.get(d)}</div>
+      <div class="dive-main">
+        <div class="site">${esc(d.site_name || 'Unnamed site')}</div>
+        <div class="meta">${prettyDate(d.date)} · ${esc((d.time || '').slice(0, 5))}${
+          d.device_name ? ' · ' + esc(d.device_name) : ''}</div>
+      </div>
+      <div class="dive-stats">
+        <div class="depth">${num(d.maxdepth)} m</div>
+        <div class="dur">${duration(d.duration)}</div>
+      </div>
+    </div>`).join('');
+
+  list.querySelectorAll('.dive-card').forEach((el) => {
+    el.addEventListener('click', () => showDetail(dives[+el.dataset.idx], order));
+  });
+}
+
+// ── Profile chart ──────────────────────────────────────────────────────────
+
+/**
+ * Depth and temperature against time, drawn as inline SVG.
+ *
+ * Samples are stored compactly as [time_ms, depth_m, temp_c]. Depth grows
+ * downward, so the y axis is inverted; temperature gets its own scale on the
+ * right and is only drawn when the dive actually recorded a range.
+ */
+function profileSvg(samples) {
+  const pts = samples
+    .map((s) => ({ t: s[0] / 1000, d: s[1], c: s[2] }))
+    .filter((p) => isFinite(p.t) && isFinite(p.d));
+  if (pts.length < 2) return '<div class="empty">No profile recorded for this dive.</div>';
+
+  const W = 900, H = 340, L = 52, R = 52, T = 16, B = 34;
+  const gw = W - L - R, gh = H - T - B;
+
+  const maxT = Math.max(...pts.map((p) => p.t)) || 1;
+  const maxD = Math.max(...pts.map((p) => p.d)) || 1;
+  const depthTop = maxD * 1.08;
+
+  const temps = pts.map((p) => p.c).filter((c) => isFinite(c) && c !== 0);
+  const hasTemp = temps.length > 1 && Math.max(...temps) > Math.min(...temps);
+  const tMin = hasTemp ? Math.min(...temps) : 0;
+  const tMax = hasTemp ? Math.max(...temps) : 1;
+
+  const x = (t) => L + (t / maxT) * gw;
+  const yD = (d) => T + (d / depthTop) * gh;
+  const yT = (c) => T + gh - ((c - tMin) / (tMax - tMin || 1)) * gh * 0.82 - gh * 0.09;
+
+  const depthPath = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${yD(p.d).toFixed(1)}`).join('');
+  const fillPath = `${depthPath}L${x(pts[pts.length - 1].t).toFixed(1)},${yD(0)}L${x(pts[0].t).toFixed(1)},${yD(0)}Z`;
+
+  let tempPath = '';
+  if (hasTemp) {
+    let started = false;
+    for (const p of pts) {
+      if (!isFinite(p.c) || p.c === 0) continue;
+      tempPath += `${started ? 'L' : 'M'}${x(p.t).toFixed(1)},${yT(p.c).toFixed(1)}`;
+      started = true;
+    }
+  }
+
+  // Grid: depth every 5/10/20 m depending on how deep the dive went.
+  const step = maxD <= 12 ? 2 : maxD <= 30 ? 5 : maxD <= 60 ? 10 : 20;
+  let grid = '';
+  for (let d = 0; d <= depthTop; d += step) {
+    const y = yD(d).toFixed(1);
+    grid += `<line x1="${L}" y1="${y}" x2="${W - R}" y2="${y}" stroke="#23415e" stroke-width="1"/>`;
+    grid += `<text x="${L - 8}" y="${+y + 4}" fill="#5f7f96" font-size="11" text-anchor="end">${d}</text>`;
+  }
+  // Time axis: about six labels, on whole minutes.
+  const minutes = maxT / 60;
+  const mStep = Math.max(1, Math.ceil(minutes / 6));
+  for (let m = 0; m <= minutes; m += mStep) {
+    const px = x(m * 60).toFixed(1);
+    grid += `<line x1="${px}" y1="${T}" x2="${px}" y2="${T + gh}" stroke="#1a3049" stroke-width="1"/>`;
+    grid += `<text x="${px}" y="${H - 12}" fill="#5f7f96" font-size="11" text-anchor="middle">${m}′</text>`;
+  }
+  if (hasTemp) {
+    for (const c of [tMin, tMax]) {
+      grid += `<text x="${W - R + 8}" y="${(yT(c) + 4).toFixed(1)}" fill="#ffb74d" font-size="11">${c.toFixed(1)}°</text>`;
+    }
+  }
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
+         aria-label="Dive profile: maximum depth ${maxD.toFixed(1)} metres over ${Math.round(minutes)} minutes">
+      <rect width="${W}" height="${H}" fill="#0d1b2a" rx="8"/>
+      ${grid}
+      <path d="${fillPath}" fill="rgba(79,195,247,.16)"/>
+      <path d="${depthPath}" fill="none" stroke="#4fc3f7" stroke-width="2.5"
+            stroke-linejoin="round" stroke-linecap="round"/>
+      ${tempPath ? `<path d="${tempPath}" fill="none" stroke="#ffb74d" stroke-width="2"
+            stroke-linejoin="round" stroke-linecap="round" opacity=".9"/>` : ''}
+    </svg>
+    <div class="legend">
+      <span><i style="background:#4fc3f7"></i>Depth (m)</span>
+      ${hasTemp ? '<span><i style="background:#ffb74d"></i>Temperature (°C)</span>' : ''}
+    </div>`;
+}
+
+// ── Detail ─────────────────────────────────────────────────────────────────
+
+function showDetail(d, order) {
+  const samples = asArray(d.samples);
+  const gases = asArray(d.gasmixes);
+  const tanks = asArray(d.tanks);
+
+  const gasName = (g) => {
+    const o2 = Number(g.o2) || 0, he = Number(g.he) || 0;
+    if (he > 0) return `Tx ${Math.round(o2)}/${Math.round(he)}`;
+    if (Math.round(o2) === 21) return 'Air';
+    return `EAN${Math.round(o2)}`;
+  };
+
+  const tiles = [
+    ['Max depth', `${num(d.maxdepth)}<small> m</small>`],
+    ['Avg depth', `${num(d.avgdepth)}<small> m</small>`],
+    ['Duration', duration(d.duration)],
+    ['Water temp', d.temp_min != null ? `${num(d.temp_min)}<small> °C</small>` : '–'],
+    ['Air temp', d.temp_surface != null ? `${num(d.temp_surface)}<small> °C</small>` : '–'],
+    ['Mode', esc(d.divemode || 'OC')],
+  ];
+
+  document.getElementById('detail-body').innerHTML = `
+    <div class="detail-head">
+      <h2>Dive ${order.get(d) ?? ''} — ${esc(d.site_name || 'Unnamed site')}</h2>
+    </div>
+    <div class="detail-sub">${prettyDate(d.date)} at ${esc((d.time || '').slice(0, 5))}${
+      d.device_name ? ' · ' + esc(d.device_name) : ''}</div>
+
+    <div class="profile-wrap">${profileSvg(samples)}</div>
+
+    <div class="tiles">
+      ${tiles.map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('')}
+    </div>
+
+    ${gases.length ? `
+      <h3>Gas mixes</h3>
+      <table>
+        <tr><th>Mix</th><th>O₂</th><th>He</th><th>N₂</th></tr>
+        ${gases.map((g) => `<tr>
+          <td>${gasName(g)}</td><td>${num(g.o2)} %</td>
+          <td>${num(g.he)} %</td><td>${num(g.n2)} %</td></tr>`).join('')}
+      </table>` : ''}
+
+    ${tanks.length ? `
+      <h3>Cylinders</h3>
+      <table>
+        <tr><th>Size</th><th>Working</th><th>Start</th><th>End</th><th>Used</th></tr>
+        ${tanks.map((t) => {
+          const used = (Number(t.start) || 0) - (Number(t.end) || 0);
+          return `<tr>
+            <td>${num(t.volume)} L</td>
+            <td>${num(t.workpressure, 0)} bar</td>
+            <td>${num(t.start, 0)} bar</td>
+            <td>${num(t.end, 0)} bar</td>
+            <td>${used > 0 ? num(used, 0) + ' bar' : '–'}</td></tr>`;
+        }).join('')}
+      </table>` : ''}
+
+    ${(d.site_lat != null && d.site_lon != null) ? `
+      <h3>Location</h3>
+      <div class="note">${num(d.site_lat, 5)}, ${num(d.site_lon, 5)}
+        — <a href="https://www.openstreetmap.org/?mlat=${d.site_lat}&mlon=${d.site_lon}#map=13/${d.site_lat}/${d.site_lon}"
+             target="_blank" rel="noopener">open in OpenStreetMap</a></div>` : ''}
+  `;
+  switchTab('detail');
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────────
+
+function renderStats() {
+  const n = dives.length;
+  const totalSeconds = dives.reduce((a, d) => a + (Number(d.duration) || 0), 0);
+  const deepest = dives.reduce((a, d) => Math.max(a, Number(d.maxdepth) || 0), 0);
+  const coldest = dives.reduce((a, d) =>
+    (d.temp_min != null && (a === null || d.temp_min < a)) ? Number(d.temp_min) : a, null);
+  const sites = new Set(dives.map((d) => d.site_name).filter(Boolean)).size;
+  const avgDepth = n ? dives.reduce((a, d) => a + (Number(d.maxdepth) || 0), 0) / n : 0;
+
+  const tiles = [
+    ['Dives logged', n],
+    ['Time underwater', `${Math.floor(totalSeconds / 3600)}<small> h</small> ${Math.floor((totalSeconds % 3600) / 60)}<small> m</small>`],
+    ['Deepest', `${num(deepest)}<small> m</small>`],
+    ['Average max depth', `${num(avgDepth)}<small> m</small>`],
+    ['Coldest', coldest === null ? '–' : `${num(coldest)}<small> °C</small>`],
+    ['Sites visited', sites],
+  ];
+  document.getElementById('stat-tiles').innerHTML = tiles
+    .map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`)
+    .join('');
+
+  const byYear = new Map();
+  for (const d of dives) {
+    const y = (d.date || '').slice(0, 4);
+    if (y) byYear.set(y, (byYear.get(y) || 0) + 1);
+  }
+  const years = [...byYear.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  const peak = Math.max(1, ...byYear.values());
+
+  document.getElementById('per-year').innerHTML = years.length
+    ? `<table>${years.map(([y, c]) => `
+        <tr><td style="width:70px">${y}</td>
+        <td><div style="background:var(--accent);height:14px;border-radius:3px;
+             width:${(c / peak * 100).toFixed(1)}%;min-width:3px"></div></td>
+        <td style="width:60px;text-align:right">${c}</td></tr>`).join('')}</table>`
+    : '<div class="empty">No dives yet.</div>';
+}
+
+// ── Map ────────────────────────────────────────────────────────────────────
+
+let map = null, markerLayer = null;
+
+function renderMap() {
+  const located = dives.filter((d) => d.site_lat != null && d.site_lon != null);
+
+  if (!map) {
+    map = L.map('map', { scrollWheelZoom: true }).setView([30, 10], 2);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(map);
+    markerLayer = L.layerGroup().addTo(map);
+  }
+  markerLayer.clearLayers();
+
+  // One marker per site, with a dive count rather than a pin per dive.
+  const bySite = new Map();
+  for (const d of located) {
+    const key = `${d.site_name || ''}@${d.site_lat},${d.site_lon}`;
+    if (!bySite.has(key)) bySite.set(key, { name: d.site_name, lat: +d.site_lat, lon: +d.site_lon, dives: [] });
+    bySite.get(key).dives.push(d);
+  }
+
+  const points = [];
+  for (const s of bySite.values()) {
+    const deepest = Math.max(...s.dives.map((d) => Number(d.maxdepth) || 0));
+    L.marker([s.lat, s.lon]).addTo(markerLayer).bindPopup(
+      `<strong>${esc(s.name || 'Unnamed site')}</strong><br>` +
+      `${s.dives.length} dive${s.dives.length === 1 ? '' : 's'}<br>` +
+      `deepest ${deepest.toFixed(1)} m`);
+    points.push([s.lat, s.lon]);
+  }
+  if (points.length) map.fitBounds(points, { padding: [40, 40], maxZoom: 11 });
+
+  // Leaflet mis-measures a container that was hidden when it was created.
+  setTimeout(() => map.invalidateSize(), 60);
+}
+
+// ── Navigation ─────────────────────────────────────────────────────────────
+
+function switchTab(name) {
+  for (const id of ['dives', 'detail', 'stats', 'map']) {
+    document.getElementById('tab-' + id).classList.toggle('hidden', id !== name);
+  }
+  document.querySelectorAll('nav button').forEach((b) =>
+    b.classList.toggle('active', b.dataset.tab === name));
+
+  if (name === 'stats') renderStats();
+  if (name === 'map') renderMap();
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+
+function showLogin(message, kind) {
+  document.getElementById('login-view').classList.remove('hidden');
+  document.getElementById('app-view').classList.add('hidden');
+  const el = document.getElementById('login-msg');
+  el.textContent = message || '';
+  el.className = 'msg' + (kind ? ' ' + kind : '');
+}
+
+function signOut() {
+  saveSession(null);
+  dives = [];
+  showLogin('');
+}
+
+async function enterApp() {
+  document.getElementById('login-view').classList.add('hidden');
+  document.getElementById('app-view').classList.remove('hidden');
+  document.getElementById('who').textContent = session.email || '';
+  await reload();
+}
+
+async function reload() {
+  const list = document.getElementById('dive-list');
+  list.innerHTML = '<div class="empty">Loading your dives…</div>';
+  try {
+    dives = await fetchDives();
+    renderList();
+  } catch (e) {
+    list.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+async function handleSignIn() {
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  if (!email || !password) return showLogin('Enter your email and password.', 'err');
+
+  showLogin('Signing in…');
+  try {
+    await signIn(email, password);
+    await enterApp();
+  } catch (e) {
+    showLogin(e.message, 'err');
+  }
+}
+
+async function handleSignUp() {
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  if (!email || !password) return showLogin('Enter an email and a password.', 'err');
+
+  showLogin('Creating your account…');
+  try {
+    if (await signUp(email, password)) await enterApp();
+    else showLogin('Account created. Check your email to confirm, then sign in.', 'ok');
+  } catch (e) {
+    showLogin(e.message, 'err');
+  }
+}
+
+document.getElementById('btn-signin').addEventListener('click', handleSignIn);
+document.getElementById('btn-signup').addEventListener('click', handleSignUp);
+document.getElementById('btn-signout').addEventListener('click', signOut);
+document.getElementById('btn-refresh').addEventListener('click', reload);
+document.getElementById('btn-back').addEventListener('click', () => switchTab('dives'));
+document.getElementById('search').addEventListener('input', renderList);
+document.getElementById('password').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') handleSignIn();
+});
+document.querySelectorAll('nav button').forEach((b) =>
+  b.addEventListener('click', () => switchTab(b.dataset.tab)));
+
+// A stored session is only a hint; the first request proves whether it works.
+(async () => {
+  session = loadSession();
+  if (session && session.access_token) {
+    try {
+      dives = await fetchDives();
+      await enterApp();
+      renderList();
+      return;
+    } catch {
+      saveSession(null);
+    }
+  }
+  showLogin('');
+})();
+
+})();
+</script>
+</body>
+</html>
