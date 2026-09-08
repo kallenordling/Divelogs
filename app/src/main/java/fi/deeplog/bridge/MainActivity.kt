@@ -38,7 +38,9 @@ private const val MAP_URL =
 
 // ── Data classes ──────────────────────────────────────────────────────────────
 
-data class FoundDevice(val name: String, val address: String)
+const val DC_TRANSPORT_BLE = 32
+
+data class FoundDevice(val name: String, val address: String, val model: String? = null)
 
 data class DiveSite(val name: String, val lat: Double, val lon: Double)
 
@@ -358,7 +360,8 @@ class DeviceAdapter(private val onClick: (FoundDevice) -> Unit) :
     override fun getItemCount() = items.size
     override fun onBindViewHolder(h: VH, pos: Int) {
         val d = items[pos]
-        h.tvName.text = d.name; h.tvAddr.text = d.address
+        h.tvName.text = d.name
+        h.tvAddr.text = d.model ?: d.address
         val selected = d.address == selectedAddress
         h.bg.setColor(if (selected) 0xFF1A3A5A.toInt() else 0xFF1A2840.toInt())
         h.bg.setStroke(if (selected) 2 else 0, 0xFF4FC3F7.toInt())
@@ -473,6 +476,43 @@ class DiveAdapter(private val onClick: (DiveEntry) -> Unit) :
 
 // ── SiteAdapter ───────────────────────────────────────────────────────────────
 
+/** Rows for the bundled site catalogue: name over "Country · Region · Kind". */
+class CatalogueAdapter(
+    private val items: List<SiteCatalog.Entry>,
+    private val onSelect: (SiteCatalog.Entry) -> Unit
+) : RecyclerView.Adapter<CatalogueAdapter.VH>() {
+
+    class VH(val row: LinearLayout, val tvName: TextView, val tvSub: TextView) :
+        RecyclerView.ViewHolder(row)
+
+    override fun onCreateViewHolder(parent: ViewGroup, type: Int): VH {
+        val ctx = parent.context
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 20, 24, 20)
+            layoutParams = RecyclerView.LayoutParams(
+                RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT
+            )
+        }
+        row.addView(TextView(ctx).apply {
+            textSize = 15f; setTextColor(0xFFE8E8E8.toInt())
+        })
+        row.addView(TextView(ctx).apply {
+            textSize = 12f; setTextColor(0xFF7EA8C8.toInt())
+        })
+        return VH(row, row.getChildAt(0) as TextView, row.getChildAt(1) as TextView)
+    }
+
+    override fun getItemCount() = items.size
+
+    override fun onBindViewHolder(h: VH, pos: Int) {
+        val e = items[pos]
+        h.tvName.text = e.name
+        h.tvSub.text = e.subtitle
+        h.row.setOnClickListener { onSelect(e) }
+    }
+}
+
 class SiteAdapter(
     private val sites: MutableList<DiveSite>,
     private val onSelect: (DiveSite) -> Unit,
@@ -528,6 +568,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var btnScan:          Button
     private lateinit var btnDownload:      Button
+    private lateinit var btnImport:        Button
     private lateinit var btnSites:         Button
     private lateinit var progressBar:      ProgressBar
     private lateinit var tvStatus:         TextView
@@ -567,6 +608,7 @@ class MainActivity : AppCompatActivity() {
 
         btnScan        = findViewById(R.id.btnScan)
         btnDownload    = findViewById(R.id.btnDownload)
+        btnImport      = findViewById(R.id.btnImport)
         btnSites       = findViewById(R.id.btnSites)
         progressBar    = findViewById(R.id.progressBar)
         tvStatus       = findViewById(R.id.tvStatus)
@@ -588,6 +630,7 @@ class MainActivity : AppCompatActivity() {
         rvDives.adapter = diveAdapter
 
         btnScan.setOnClickListener { requestPermissionsAndScan() }
+        btnImport.setOnClickListener { showImportDialog() }
         btnDownload.setOnClickListener { startDownload() }
         btnSites.setOnClickListener { showSitesDialog() }
 
@@ -883,7 +926,12 @@ class MainActivity : AppCompatActivity() {
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val name = result.device.name ?: return
-            deviceAdapter.addOrUpdate(FoundDevice(name, result.device.address))
+            // Ask libdivecomputer whether this advertised name belongs to a dive
+            // computer it supports; anything else is not worth offering.
+            val model = DcBridge.matchDevice(name, DC_TRANSPORT_BLE)
+                ?.replace('|', ' ')?.trim()
+                ?: return
+            deviceAdapter.addOrUpdate(FoundDevice(name, result.device.address, model))
         }
     }
 
@@ -925,7 +973,7 @@ class MainActivity : AppCompatActivity() {
         scope.launch(Dispatchers.IO) {
             try {
                 transport.connect()
-                DcBridge.download(dev.name, 32, transport, fingerprint)
+                DcBridge.download(dev.name, DC_TRANSPORT_BLE, transport, fingerprint)
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { status("Error: ${e.message}") }
             } finally {
@@ -1045,6 +1093,172 @@ class MainActivity : AppCompatActivity() {
 
     // ── Dive site storage ─────────────────────────────────────────────────────
 
+    // ── Import ────────────────────────────────────────────────────────────────
+
+    private val filePickerLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (!uris.isNullOrEmpty()) importFiles(uris)
+        }
+
+    private fun showImportDialog() {
+        val options = arrayOf(
+            "From a file…",
+            "Garmin Connect",
+            "Suunto app (Sports Tracker)"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Import dives")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> filePickerLauncher.launch(arrayOf("*/*"))
+                    else -> showCloudUnavailable(options[which])
+                }
+            }
+            .show()
+    }
+
+    // The account sign-in flows are not wired up in this build; the importers
+    // and the Garmin client behind them are in place, only the dialog is not.
+    private fun showCloudUnavailable(sourceLabel: String) {
+        AlertDialog.Builder(this)
+            .setTitle(sourceLabel)
+            .setMessage(
+                "Importing straight from $sourceLabel is not enabled in this build.\n\n" +
+                    "Export your dives from $sourceLabel and import the file here " +
+                    "instead — .fit, UDDF, Subsurface XML, MacDive, DL7 and CSV all work."
+            )
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    private fun importFiles(uris: List<android.net.Uri>) {
+        progressBar.visibility = View.VISIBLE
+        progressBar.isIndeterminate = true
+        status("Reading ${uris.size} file(s)…")
+
+        scope.launch(Dispatchers.IO) {
+            val all = mutableListOf<fi.deeplog.bridge.imports.ImportedDive>()
+            val notes = mutableListOf<String>()
+
+            for (uri in uris) {
+                val label = displayName(uri)
+                try {
+                    val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw java.io.IOException("could not open")
+                    val result = fi.deeplog.bridge.imports.ImportRegistry.parse(bytes, label)
+                    all += result.dives
+                    notes += "$label: ${result.dives.size} dive(s) as ${result.format}"
+                    notes += result.warnings.map { "$label: $it" }
+                } catch (e: Exception) {
+                    Log.e(TAG, "import $label failed", e)
+                    notes += "$label: ${e.message}"
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                progressBar.isIndeterminate = false
+                progressBar.visibility = View.GONE
+                ingestImported(all, "File import", notes)
+            }
+        }
+    }
+
+    private fun displayName(uri: android.net.Uri): String =
+        runCatching {
+            contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+            }
+        }.getOrNull() ?: uri.lastPathSegment ?: "file"
+
+    /**
+     * Adds imported dives to the log, skipping any already present, then
+     * uploads the new ones exactly as a device download would.
+     */
+    private fun ingestImported(
+        imported: List<fi.deeplog.bridge.imports.ImportedDive>,
+        source: String,
+        notes: List<String>
+    ) {
+        var added = 0
+        var skipped = 0
+
+        for (d in imported.sortedWith(compareBy({ it.date }, { it.time }))) {
+            if (d.key in existingDiveKeys || diveAdapter.allItems.any { "${it.date}_${it.time}" == d.key }) {
+                skipped++
+                continue
+            }
+            diveCounter++
+            added++
+            val o = d.toJson()
+            diveAdapter.add(
+                DiveEntry(
+                    number        = diveCounter,
+                    date          = d.date,
+                    time          = d.time,
+                    maxdepth      = d.maxdepth,
+                    avgdepth      = d.avgdepth,
+                    duration      = d.duration,
+                    divemode      = d.divemode,
+                    temp_surface  = d.tempSurface,
+                    temp_min      = d.tempMin,
+                    temp_max      = d.tempMax,
+                    atmospheric   = d.atmospheric,
+                    salinity_type = d.salinityType,
+                    gasmixes      = o.getJSONArray("gasmixes"),
+                    tanks         = o.getJSONArray("tanks"),
+                    samples       = o.getJSONArray("samples"),
+                    isNew         = true
+                )
+            )
+            rememberImportedSite(d)
+        }
+
+        if (added > 0) {
+            newDivesFound = added
+            resortAndRenumber()
+        }
+
+        val summary = buildString {
+            append("$added imported")
+            if (skipped > 0) append(", $skipped already in log")
+        }
+        status(summary)
+
+        val detail = notes.filter { it.isNotBlank() }
+        if (detail.isNotEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("Import: $summary")
+                .setMessage(detail.joinToString("\n"))
+                .setPositiveButton("OK", null)
+                .show()
+        }
+
+        if (added > 0 && SupabaseClient.isLoggedIn) uploadNewDives(source)
+        else if (added > 0) status("$summary. Sign in to sync to cloud.")
+    }
+
+    /** Keeps a site that came in with an imported dive, so the upload carries it. */
+    private fun rememberImportedSite(d: fi.deeplog.bridge.imports.ImportedDive) {
+        val name = d.siteName?.takeIf { it.isNotBlank() } ?: return
+        diveToSite["${d.date}_${d.time}"] = name
+
+        val prefs = getSharedPreferences("dive_sites", MODE_PRIVATE)
+        val assoc = JSONObject(prefs.getString("dive_assoc", "{}") ?: "{}")
+        assoc.put("${d.date}_${d.time}", name)
+        prefs.edit().putString("dive_assoc", assoc.toString()).apply()
+
+        val lat = d.siteLat
+        val lon = d.siteLon
+        if (lat != null && lon != null) {
+            val sites = loadSites()
+            if (sites.none { it.name.equals(name, ignoreCase = true) }) {
+                sites.add(DiveSite(name, lat, lon))
+                saveSites(sites)
+            }
+        }
+    }
+
     private fun loadSites(): MutableList<DiveSite> {
         val json = getSharedPreferences("dive_sites", MODE_PRIVATE)
             .getString("sites", "[]") ?: "[]"
@@ -1104,6 +1318,8 @@ class MainActivity : AppCompatActivity() {
             setTypeface(typeface, Typeface.BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
+        val btnBrowse = Button(this).apply { text = "🌐" }
+        titleRow.addView(btnBrowse)
         val btnAddSite = Button(this).apply { text = "+ Add Site" }
         titleRow.addView(btnAddSite)
         titleRow.addView(Button(this).apply {
@@ -1234,11 +1450,138 @@ class MainActivity : AppCompatActivity() {
         bottomSection.addView(siteRv)
         root.addView(bottomSection)
 
+        // Browse the bundled catalogue. In picker mode the chosen site is
+        // assigned straight to the dive; otherwise it is saved to your sites.
+        btnBrowse.setOnClickListener {
+            showCatalogueDialog { entry ->
+                val site = entry.toDiveSite()
+                if (onSelected != null) {
+                    onSelected(site)
+                    dialog.dismiss()
+                } else {
+                    val existing = sites.indexOfFirst {
+                        it.name.equals(site.name, ignoreCase = true)
+                    }
+                    if (existing >= 0) {
+                        Toast.makeText(this, "\"${site.name}\" is already saved", Toast.LENGTH_SHORT).show()
+                        mapWebView?.evaluateJavascript("flyToSite(${site.lat},${site.lon});", null)
+                    } else {
+                        sites.add(site)
+                        saveSites(sites)
+                        siteAdapterRef?.notifyItemInserted(sites.size - 1)
+                        mapWebView?.let { injectMarker(it, site, "addSiteMarker") }
+                        mapWebView?.evaluateJavascript("flyToSite(${site.lat},${site.lon});", null)
+                        Toast.makeText(this, "Added \"${site.name}\"", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+
         // Wire up "+ Add Site" button — activates tap-on-map mode
         btnAddSite.setOnClickListener {
             mapWebView?.evaluateJavascript("enableAddMode();", null)
             Toast.makeText(this, "Tap the map to place a new site", Toast.LENGTH_SHORT).show()
         }
+
+        dialog.setContentView(root)
+        dialog.show()
+    }
+
+    // ── Site catalogue browser ────────────────────────────────────────────────
+
+    /**
+     * Searchable list over the bundled catalogue.
+     *
+     * @param onPick receives the chosen entry. The caller decides whether that
+     *   means "save it" or "assign it to this dive".
+     */
+    private fun showCatalogueDialog(onPick: (SiteCatalog.Entry) -> Unit) {
+        val dp = resources.displayMetrics.density
+        val pad = (12 * dp).toInt()
+        val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0D1820.toInt())
+        }
+
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(pad, (8 * dp).toInt(), (8 * dp).toInt(), (8 * dp).toInt())
+        }
+        val tvTitle = TextView(this).apply {
+            text = "🌐 Site catalogue"; textSize = 17f; setTextColor(0xFFFFFFFF.toInt())
+            setTypeface(typeface, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        titleRow.addView(tvTitle)
+        titleRow.addView(Button(this).apply { text = "✕"; setOnClickListener { dialog.dismiss() } })
+        root.addView(titleRow)
+
+        val etQuery = EditText(this).apply {
+            hint = "Search by site, country or region"
+            setSingleLine()
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).also { it.setMargins(pad, 0, pad, (4 * dp).toInt()) }
+        }
+        root.addView(etQuery)
+
+        val tvCount = TextView(this).apply {
+            textSize = 12f; setTextColor(0xFF88AABB.toInt())
+            setPadding(pad, 0, pad, (4 * dp).toInt())
+        }
+        root.addView(tvCount)
+
+        val results = mutableListOf<SiteCatalog.Entry>()
+        lateinit var adapter: CatalogueAdapter
+        adapter = CatalogueAdapter(results) { entry ->
+            onPick(entry)
+            dialog.dismiss()
+        }
+
+        val rv = RecyclerView(this).apply {
+            layoutManager = LinearLayoutManager(this@MainActivity)
+            this.adapter = adapter
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        root.addView(rv)
+
+        root.addView(TextView(this).apply {
+            text = SiteCatalog.ATTRIBUTION
+            textSize = 10f; setTextColor(0xFF5A7A8A.toInt()); gravity = Gravity.CENTER
+            setPadding(pad, (6 * dp).toInt(), pad, (10 * dp).toInt())
+        })
+
+        var searchJob: Job? = null
+        fun runSearch(query: String) {
+            searchJob?.cancel()
+            searchJob = scope.launch {
+                // The first search parses the asset, so keep it off the main thread.
+                val found = withContext(Dispatchers.IO) {
+                    SiteCatalog.search(this@MainActivity, query)
+                }
+                results.clear(); results.addAll(found)
+                adapter.notifyDataSetChanged()
+                val total = withContext(Dispatchers.IO) { SiteCatalog.entries(this@MainActivity).size }
+                tvCount.text = when {
+                    total == 0 -> "Catalogue could not be loaded"
+                    query.isBlank() -> "$total sites — start typing to narrow it down"
+                    found.isEmpty() -> "No match for \"$query\""
+                    else -> "${found.size} match(es)"
+                }
+            }
+        }
+
+        etQuery.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(sIn: android.text.Editable?) {
+                runSearch(sIn?.toString().orEmpty())
+            }
+            override fun beforeTextChanged(c: CharSequence?, a: Int, b: Int, d: Int) {}
+            override fun onTextChanged(c: CharSequence?, a: Int, b: Int, d: Int) {}
+        })
+        runSearch("")
 
         dialog.setContentView(root)
         dialog.show()
