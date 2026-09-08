@@ -21,6 +21,9 @@
 #include <atomic>
 #include <sstream>
 #include <iomanip>
+#include <cctype>
+#include <cstring>
+#include <strings.h>
 
 #define LOG_TAG "DeepLogBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -350,6 +353,131 @@ static std::string diveToJson(const Dive& d) {
     return o.str();
 }
 
+// ── Descriptor resolution ─────────────────────────────────────────────────────
+//
+// libdivecomputer knows, per descriptor, which advertised BLE names belong to
+// it: dc_descriptor_filter() answers that question. Asking it beats guessing
+// with substring matches, and it never picks an unrelated driver.
+//
+// Filtering alone is not always enough, though: several descriptors can accept
+// the same name (Shearwater's family filter takes every "Perdix*", the OSTC3
+// family shares one model code). So collect every candidate, then rank.
+
+// Case-insensitive compare that ignores spaces, hyphens and underscores, so
+// "Perdix 2" and "PERDIX2" compare equal.
+static bool name_equal_loose(const char* a, const char* b) {
+    if (!a || !b) return false;
+    auto skip = [](const char* p) {
+        while (*p == ' ' || *p == '-' || *p == '_') p++;
+        return p;
+    };
+    for (;;) {
+        a = skip(a); b = skip(b);
+        if (!*a || !*b) return !*a && !*b;
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+        a++; b++;
+    }
+}
+
+// Pelagic-family computers (Oceanic, Aqualung, Sherwood, Apeks) advertise as
+// two letters naming the model followed by a serial number, e.g. "FQ001234".
+// The two letters, uppercased, are the descriptor's model code.
+static bool model_code_from_name(const char* name, unsigned int* out) {
+    if (!name || !name[0] || !name[1]) return false;
+    if (!isalpha((unsigned char)name[0]) || !isalpha((unsigned char)name[1])) return false;
+
+    unsigned digits = 0;
+    for (const char* p = name + 2; *p; p++) {
+        if (isdigit((unsigned char)*p)) { digits++; continue; }
+        if (*p == ' ' || *p == '-' || *p == '_') continue;
+        return false;
+    }
+    if (digits < 6) return false;
+
+    *out = ((unsigned int)toupper((unsigned char)name[0]) << 8) |
+            (unsigned int)toupper((unsigned char)name[1]);
+    return true;
+}
+
+// Length of the descriptor product name as a prefix of the advertised name,
+// comparing loosely; 0 when it is not a prefix. Longer prefix = better match,
+// which separates "Perdix 2" from "Perdix" when the device advertises the
+// former.
+static size_t product_prefix_len(const char* name, const char* product) {
+    if (!name || !product) return 0;
+    auto skip = [](const char* p) {
+        while (*p == ' ' || *p == '-' || *p == '_') p++;
+        return p;
+    };
+    const char* n = name;
+    const char* p = product;
+    size_t matched = 0;
+    for (;;) {
+        n = skip(n); p = skip(p);
+        if (!*p) return matched;                 // product exhausted → prefix
+        if (!*n) return 0;                       // name ran out first
+        if (tolower((unsigned char)*n) != tolower((unsigned char)*p)) return 0;
+        n++; p++; matched++;
+    }
+}
+
+// Returns a descriptor the caller must dc_descriptor_free(), or NULL when the
+// advertised name matches no supported dive computer.
+static dc_descriptor_t* resolve_descriptor(dc_context_t* ctx,
+                                           const char* name,
+                                           dc_transport_t transport)
+{
+    dc_iterator_t* iter = nullptr;
+    if (dc_descriptor_iterator_new(&iter, ctx) != DC_STATUS_SUCCESS) return nullptr;
+
+    unsigned int wanted_model = 0;
+    const bool has_wanted_model = model_code_from_name(name, &wanted_model);
+
+    dc_descriptor_t* best  = nullptr;
+    int              best_rank   = -1;   // higher is better
+    size_t           best_prefix = 0;
+
+    dc_descriptor_t* desc = nullptr;
+    while (dc_iterator_next(iter, &desc) == DC_STATUS_SUCCESS) {
+        if (!dc_descriptor_filter(desc, transport, name)) {
+            dc_descriptor_free(desc);
+            continue;
+        }
+
+        const char* product = dc_descriptor_get_product(desc);
+        const size_t prefix = product_prefix_len(name, product);
+
+        // Rank the candidate. 3: the name is exactly this product. 2: the name
+        // carries this descriptor's model code. 1: the product is a prefix of
+        // the name. 0: the descriptor's own filter accepted it, nothing more.
+        int rank;
+        if (name_equal_loose(name, product))                          rank = 3;
+        else if (has_wanted_model &&
+                 dc_descriptor_get_model(desc) == wanted_model)       rank = 2;
+        else if (prefix > 0)                                          rank = 1;
+        else                                                          rank = 0;
+
+        const bool better = rank > best_rank ||
+                            (rank == best_rank && prefix > best_prefix);
+        if (better) {
+            if (best) dc_descriptor_free(best);
+            best = desc; best_rank = rank; best_prefix = prefix;
+        } else {
+            dc_descriptor_free(desc);
+        }
+    }
+    dc_iterator_free(iter);
+
+    if (best) {
+        LOGI("Resolved '%s' → %s %s (model=%u, rank=%d)", name,
+             dc_descriptor_get_vendor(best), dc_descriptor_get_product(best),
+             dc_descriptor_get_model(best), best_rank);
+    } else {
+        LOGE("No descriptor matches advertised name '%s'", name);
+    }
+    return best;
+}
+
 // ── JNI globals ───────────────────────────────────────────────────────────────
 
 static JavaVM*     g_jvm     = nullptr;
@@ -369,25 +497,18 @@ struct DownloadCtx {
     bool fingerprintCaptured = false;
 };
 
-static int dive_cb(const unsigned char* data, unsigned int size,
-                   const unsigned char* fingerprint, unsigned int fsize, void* ud)
+// Runs libdivecomputer's parser over one raw dive buffer. Shared by the live
+// download path and by database imports, so both produce identical dives.
+static bool parse_dive_buffer(dc_context_t* ctx, dc_descriptor_t* descriptor,
+                              const unsigned char* data, unsigned int size,
+                              Dive& dive)
 {
-    auto* dc = (DownloadCtx*)ud;
-
-    // Capture fingerprint of first (newest) dive to use as stop-marker next time.
-    if (!dc->fingerprintCaptured && fingerprint && fsize > 0) {
-        dc->newestFingerprint.assign(fingerprint, fingerprint + fsize);
-        dc->fingerprintCaptured = true;
-        LOGI("Captured fingerprint: %u bytes", fsize);
-    }
-
-    Dive dive;
 
     dc_parser_t* parser = nullptr;
-    dc_status_t rc = dc_parser_new2(&parser, dc->ctx, dc->descriptor, data, size);
+    dc_status_t rc = dc_parser_new2(&parser, ctx, descriptor, data, size);
     if (rc != DC_STATUS_SUCCESS || !parser) {
         LOGE("dc_parser_new2 failed: %d", rc);
-        return 1;
+        return false;
     }
 
     dc_parser_get_datetime(parser, &dive.when);
@@ -462,6 +583,24 @@ static int dive_cb(const unsigned char* data, unsigned int size,
 
     dc_parser_samples_foreach(parser, sample_cb, &dive);
     dc_parser_destroy(parser);
+    return true;
+}
+
+static int dive_cb(const unsigned char* data, unsigned int size,
+                   const unsigned char* fingerprint, unsigned int fsize, void* ud)
+{
+    auto* dc = (DownloadCtx*)ud;
+
+    // Capture fingerprint of first (newest) dive to use as stop-marker next time.
+    if (!dc->fingerprintCaptured && fingerprint && fsize > 0) {
+        dc->newestFingerprint.assign(fingerprint, fingerprint + fsize);
+        dc->fingerprintCaptured = true;
+        LOGI("Captured fingerprint: %u bytes", fsize);
+    }
+
+    Dive dive;
+    if (!parse_dive_buffer(dc->ctx, dc->descriptor, data, size, dive))
+        return 1;
 
     LOGI("Dive %04d-%02d-%02d %.1fm %us %zu samples %zu gases %zu tanks",
         dive.when.year, dive.when.month, dive.when.day,
@@ -501,6 +640,68 @@ static void event_cb(dc_device_t*, dc_event_type_t ev, const void* data, void* u
     }
 }
 
+// ── Raw log parsing (Shearwater Cloud database imports) ───────────────────────
+//
+// Shearwater's desktop app stores each dive as the same bytes the computer
+// sends over the wire, so libdivecomputer's own parser can read them once the
+// two compression layers are undone. Both are reimplementations of the
+// algorithms in libdivecomputer's shearwater_common.c, which keeps them
+// private to that translation unit.
+
+// The payload is a continuous MSB-first stream of 9-bit values. Bit 0x100
+// marks a literal byte; zero ends the stream; anything else is a run of that
+// many zero bytes.
+static bool shearwater_lre_decompress(const uint8_t* data, size_t size,
+                                      std::vector<uint8_t>& out)
+{
+    const size_t nbits = size * 8;
+    if (nbits == 0 || nbits % 9 != 0) return false;
+
+    for (size_t offset = 0; offset + 9 <= nbits; offset += 9) {
+        const size_t byte = offset / 8;
+        const unsigned bit = (unsigned)(offset % 8);
+        const unsigned shift = 16 - (bit + 9);
+        const unsigned pair = ((unsigned)data[byte] << 8) |
+                              (byte + 1 < size ? (unsigned)data[byte + 1] : 0u);
+        const unsigned value = (pair >> shift) & 0x1FF;
+
+        if (value & 0x100)      out.push_back((uint8_t)(value & 0xFF));
+        else if (value == 0)    break;                       // end of stream
+        else                    out.resize(out.size() + value, 0);
+    }
+    return true;
+}
+
+// Every 32-byte block after the first is XOR'ed with the one before it.
+static void shearwater_xor_decompress(std::vector<uint8_t>& d) {
+    for (size_t i = 32; i < d.size(); i++) d[i] ^= d[i - 32];
+}
+
+// Finds a descriptor by vendor and product rather than by advertised name;
+// database imports know exactly which computer wrote the log.
+static dc_descriptor_t* descriptor_by_product(dc_context_t* ctx,
+                                              const char* vendor,
+                                              const char* product)
+{
+    dc_iterator_t* iter = nullptr;
+    if (dc_descriptor_iterator_new(&iter, ctx) != DC_STATUS_SUCCESS) return nullptr;
+
+    dc_descriptor_t* desc = nullptr;
+    dc_descriptor_t* found = nullptr;
+    while (dc_iterator_next(iter, &desc) == DC_STATUS_SUCCESS) {
+        const char* v = dc_descriptor_get_vendor(desc);
+        const char* p = dc_descriptor_get_product(desc);
+        if (!found && v && p &&
+            strcasecmp(v, vendor) == 0 && name_equal_loose(p, product)) {
+            found = desc;
+            continue;
+        }
+        dc_descriptor_free(desc);
+    }
+    dc_iterator_free(iter);
+    return found;
+}
+
 // ── JNI entry points ──────────────────────────────────────────────────────────
 
 extern "C" {
@@ -513,6 +714,78 @@ Java_fi_deeplog_bridge_DcBridge_onBleData(JNIEnv* env, jclass, jbyteArray arr)
     jbyte* raw = env->GetByteArrayElements(arr, nullptr);
     g_bio->push((const uint8_t*)raw, (size_t)len);
     env->ReleaseByteArrayElements(arr, raw, JNI_ABORT);
+}
+
+// Parses one raw dive log as stored by a desktop app's database, returning the
+// same dive JSON a live download produces (or NULL when it cannot be read).
+// When `compressed` is set the Shearwater LRE+XOR layers are undone first.
+JNIEXPORT jstring JNICALL
+Java_fi_deeplog_bridge_DcBridge_parseRaw(
+    JNIEnv* env, jclass,
+    jstring jVendor, jstring jProduct, jbyteArray jData, jboolean compressed)
+{
+    const char* vendor  = env->GetStringUTFChars(jVendor, nullptr);
+    const char* product = env->GetStringUTFChars(jProduct, nullptr);
+
+    jsize len = env->GetArrayLength(jData);
+    std::vector<uint8_t> raw((size_t)len);
+    env->GetByteArrayRegion(jData, 0, len, (jbyte*)raw.data());
+
+    if (compressed) {
+        std::vector<uint8_t> expanded;
+        if (!shearwater_lre_decompress(raw.data(), raw.size(), expanded)) {
+            LOGE("parseRaw: not a valid LRE stream (%zu bytes)", raw.size());
+            env->ReleaseStringUTFChars(jVendor, vendor);
+            env->ReleaseStringUTFChars(jProduct, product);
+            return nullptr;
+        }
+        shearwater_xor_decompress(expanded);
+        raw.swap(expanded);
+    }
+
+    dc_context_t* ctx = nullptr;
+    dc_context_new(&ctx);
+    dc_descriptor_t* desc = descriptor_by_product(ctx, vendor, product);
+    env->ReleaseStringUTFChars(jVendor, vendor);
+    env->ReleaseStringUTFChars(jProduct, product);
+
+    jstring result = nullptr;
+    if (desc) {
+        Dive dive;
+        if (parse_dive_buffer(ctx, desc, raw.data(), (unsigned int)raw.size(), dive))
+            result = env->NewStringUTF(diveToJson(dive).c_str());
+        dc_descriptor_free(desc);
+    } else {
+        LOGE("parseRaw: no descriptor for that vendor/product");
+    }
+    dc_context_free(ctx);
+    return result;
+}
+
+// Resolve an advertised BLE name to "Vendor|Product", or NULL when this is
+// not a dive computer libdivecomputer supports. Lets the scan list label real
+// devices and drop the headphones and fitness bands sharing the airwaves.
+JNIEXPORT jstring JNICALL
+Java_fi_deeplog_bridge_DcBridge_matchDevice(
+    JNIEnv* env, jclass, jstring jName, jint jtransport)
+{
+    const char* name = env->GetStringUTFChars(jName, nullptr);
+
+    dc_context_t* ctx = nullptr;
+    dc_context_new(&ctx);
+    dc_descriptor_t* desc = resolve_descriptor(ctx, name, (dc_transport_t)jtransport);
+    env->ReleaseStringUTFChars(jName, name);
+
+    jstring result = nullptr;
+    if (desc) {
+        const char* v = dc_descriptor_get_vendor(desc);
+        const char* pr = dc_descriptor_get_product(desc);
+        std::string s = std::string(v ? v : "") + "|" + std::string(pr ? pr : "");
+        result = env->NewStringUTF(s.c_str());
+        dc_descriptor_free(desc);
+    }
+    dc_context_free(ctx);
+    return result;
 }
 
 JNIEXPORT jstring JNICALL
@@ -534,39 +807,25 @@ Java_fi_deeplog_bridge_DcBridge_download(
     dc_context_t* ctx = nullptr;
     dc_context_new(&ctx);
 
-    // Find matching descriptor.
-    dc_iterator_t* iter = nullptr;
-    dc_descriptor_iterator_new(&iter, ctx);
-    dc_descriptor_t* descriptor = nullptr;
-    dc_descriptor_t* cur = nullptr;
-    while (dc_iterator_next(iter, &cur) == DC_STATUS_SUCCESS) {
-        const char* vendor  = dc_descriptor_get_vendor(cur);
-        const char* product = dc_descriptor_get_product(cur);
-        if ((product && strstr(devName, product)) ||
-            (vendor  && strstr(devName, vendor)))
-        {
-            LOGI("Matched descriptor: %s %s", vendor ? vendor : "", product ? product : "");
-            descriptor = cur;
-            break;
-        }
-        dc_descriptor_free(cur);
-    }
-    dc_iterator_free(iter);
+    dc_descriptor_t* descriptor =
+        resolve_descriptor(ctx, devName, (dc_transport_t)jtransport);
 
-    // Fallback: first BLE-capable descriptor.
-    if (!descriptor) {
-        dc_iterator_t* iter2 = nullptr;
-        dc_descriptor_iterator_new(&iter2, ctx);
-        while (dc_iterator_next(iter2, &cur) == DC_STATUS_SUCCESS) {
-            if (dc_descriptor_get_transports(cur) & (unsigned)jtransport) {
-                LOGI("Fallback descriptor: %s %s",
-                    dc_descriptor_get_vendor(cur), dc_descriptor_get_product(cur));
-                descriptor = cur;
-                break;
-            }
-            dc_descriptor_free(cur);
-        }
-        dc_iterator_free(iter2);
+    // Report the resolved model to the UI, or say plainly that the device is
+    // not supported instead of opening some other vendor's driver on it.
+    {
+        jclass mainCls = env->FindClass("fi/deeplog/bridge/MainActivity");
+        jmethodID statusId = env->GetStaticMethodID(mainCls, "onStatus", "(Ljava/lang/String;)V");
+        char buf[192];
+        if (descriptor)
+            snprintf(buf, sizeof(buf), "Recognised as %s %s",
+                     dc_descriptor_get_vendor(descriptor),
+                     dc_descriptor_get_product(descriptor));
+        else
+            snprintf(buf, sizeof(buf), "'%s' is not a supported dive computer", devName);
+        jstring js = env->NewStringUTF(buf);
+        env->CallStaticVoidMethod(mainCls, statusId, js);
+        env->DeleteLocalRef(js);
+        env->DeleteLocalRef(mainCls);
     }
 
     env->ReleaseStringUTFChars(jDeviceName, devName);
