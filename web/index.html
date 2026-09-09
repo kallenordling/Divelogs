@@ -2,1538 +2,176 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#07141F">
 <title>DeepLog</title>
 
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-
-<style>
-  :root {
-    --bg:        #0a1420;
-    --panel:     #0d1b2a;
-    --card:      #14283f;
-    --card-hi:   #1a3a5a;
-    --border:    #23415e;
-    --text:      #e8eef4;
-    --muted:     #8fb0c8;
-    --dim:       #5f7f96;
-    --accent:    #4fc3f7;
-    --warm:      #ffb74d;
-    --bad:       #ef5350;
-    --ok:        #66bb6a;
-  }
-
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    min-height: 100vh;
-  }
-  button {
-    font: inherit; cursor: pointer; border: 0; border-radius: 8px;
-    padding: 10px 16px; background: var(--accent); color: #04202e; font-weight: 600;
-  }
-  button:hover  { filter: brightness(1.1); }
-  button:disabled { opacity: .5; cursor: default; filter: none; }
-  button.ghost {
-    background: transparent; color: var(--muted);
-    border: 1px solid var(--border); font-weight: 500;
-  }
-  button.ghost:hover { color: var(--text); border-color: var(--accent); }
-  input {
-    font: inherit; width: 100%; padding: 11px 13px; border-radius: 8px;
-    border: 1px solid var(--border); background: #0b1a2b; color: var(--text);
-  }
-  input:focus { outline: 0; border-color: var(--accent); }
-  a { color: var(--accent); }
-
-  .hidden { display: none !important; }
-
-  /* ── Login ─────────────────────────────────────────────────────────── */
-  #login-view {
-    min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
-  }
-  .login-box { width: 100%; max-width: 380px; }
-  .brand { font-size: 34px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 4px; }
-  .brand span { color: var(--accent); }
-  .tagline { color: var(--dim); margin-bottom: 28px; font-size: 14px; }
-  .field { margin-bottom: 12px; }
-  .row-split { display: flex; gap: 10px; margin-top: 16px; }
-  .row-split button { flex: 1; }
-  .msg { margin-top: 14px; font-size: 13px; min-height: 19px; }
-  .msg.err { color: var(--bad); }
-  .msg.ok  { color: var(--ok); }
-
-  /* ── Chrome ────────────────────────────────────────────────────────── */
-  header {
-    position: sticky; top: 0; z-index: 500;
-    display: flex; align-items: center; gap: 14px;
-    padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
-  }
-  header .brand { font-size: 20px; margin: 0; }
-  header .spacer { flex: 1; }
-  header .who { color: var(--dim); font-size: 13px; }
-
-  nav { display: flex; gap: 4px; padding: 0 18px; background: var(--panel);
-        border-bottom: 1px solid var(--border); overflow-x: auto; }
-  nav button {
-    background: none; color: var(--muted); border-radius: 0; padding: 12px 14px;
-    border-bottom: 2px solid transparent; font-weight: 500; white-space: nowrap;
-  }
-  nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
-
-  main { padding: 18px; max-width: 1100px; margin: 0 auto; }
-
-  /* ── Dive list ─────────────────────────────────────────────────────── */
-  .toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
-  .toolbar input { flex: 1; min-width: 200px; }
-
-  .dive-grid { display: grid; gap: 10px; }
-  .dive-card {
-    display: grid; grid-template-columns: 54px 1fr auto; gap: 14px; align-items: center;
-    background: var(--card); border: 1px solid transparent; border-radius: 12px;
-    padding: 14px 16px; cursor: pointer;
-  }
-  .dive-card:hover { background: var(--card-hi); border-color: var(--border); }
-  .dive-num {
-    font-size: 19px; font-weight: 700; color: var(--accent); text-align: center;
-  }
-  .dive-main .site { font-weight: 600; }
-  .dive-main .meta { color: var(--dim); font-size: 13px; }
-  .dive-stats { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .dive-stats .depth { font-size: 17px; font-weight: 600; }
-  .dive-stats .dur { color: var(--dim); font-size: 13px; }
-
-  /* ── Stats ─────────────────────────────────────────────────────────── */
-  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-  .tile { background: var(--card); border-radius: 12px; padding: 16px; }
-  .tile .label { color: var(--dim); font-size: 12px; text-transform: uppercase;
-                 letter-spacing: .06em; margin-bottom: 6px; }
-  .tile .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .tile .value small { font-size: 14px; font-weight: 500; color: var(--muted); }
-
-  /* ── Detail ────────────────────────────────────────────────────────── */
-  .detail-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
-  .detail-head h2 { margin: 0; font-size: 22px; }
-  .detail-sub { color: var(--dim); margin-bottom: 18px; }
-
-  .profile-wrap { background: var(--panel); border-radius: 12px; padding: 8px; margin-bottom: 18px; }
-  .profile-wrap svg { display: block; width: 100%; height: auto; }
-  .legend { display: flex; gap: 18px; justify-content: center; font-size: 12px;
-            color: var(--muted); padding: 6px 0 2px; }
-  .legend i { display: inline-block; width: 11px; height: 3px; border-radius: 2px;
-              vertical-align: middle; margin-right: 5px; }
-
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
-  th { color: var(--dim); font-weight: 500; font-size: 12px;
-       text-transform: uppercase; letter-spacing: .05em; }
-  td { font-variant-numeric: tabular-nums; }
-
-  h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em;
-       color: var(--muted); margin: 24px 0 8px; }
-
-  #map { height: 520px; border-radius: 12px; }
-  .maptools {
-    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
-    background: var(--card); border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
-    font-size: 13px; color: var(--muted);
-  }
-  .maptools .grow { flex: 1; }
-  .maptools input[type="search"] { width: auto; min-width: 190px; flex: 0 1 260px; padding: 8px 11px; }
-  .maptools .chk { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text); }
-  .maptools .key { display: flex; align-items: center; gap: 6px; }
-  .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
-  .dot.cat  { background: #4a9d78; border: 1px solid #7fd4a8; }
-  .dot.mine { background: #4fc3f7; border: 2px solid #0a1420; width: 13px; height: 13px; }
-  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card); color: var(--text); }
-  .leaflet-popup-content a.site-link {
-    display: inline-block; margin-top: 6px; font-weight: 600; color: var(--accent);
-  }
-
-  .empty { color: var(--dim); text-align: center; padding: 48px 20px; }
-
-  /* ── Modal ─────────────────────────────────────────────────────────── */
-  .modal {
-    position: fixed; inset: 0; z-index: 1000; background: rgba(4, 12, 20, .78);
-    display: flex; align-items: center; justify-content: center; padding: 20px;
-  }
-  .modal-box {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-    width: 100%; max-width: 520px; max-height: 86vh; display: flex; flex-direction: column;
-    padding: 18px;
-  }
-  .modal-box h3 { margin: 0 0 12px; color: var(--text); font-size: 17px;
-                  text-transform: none; letter-spacing: 0; }
-  .pick-list { overflow-y: auto; flex: 1; margin: 12px -6px 0; min-height: 120px; }
-  .pick-row { padding: 10px 12px; border-radius: 8px; cursor: pointer; }
-  .pick-row:hover { background: var(--card-hi); }
-  .pick-row .n { font-weight: 600; }
-  .pick-row .s { color: var(--dim); font-size: 12px; }
-  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
-
-  /* ── Selection mode ────────────────────────────────────────────────── */
-  .dive-card.picked { border-color: var(--accent); background: var(--card-hi); }
-  .selbar {
-    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-    background: var(--card); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px;
-  }
-  .selbar .grow { flex: 1; color: var(--muted); font-size: 14px; }
-
-  .note { color: var(--dim); font-size: 12px; margin-top: 20px; line-height: 1.6; }
-
-  @media (max-width: 560px) {
-    main { padding: 12px; }
-    .dive-card { grid-template-columns: 40px 1fr auto; padding: 12px; gap: 10px; }
-    header { padding: 10px 12px; }
-    nav { padding: 0 6px; }
-  }
-</style>
+<link rel="stylesheet" href="css/app.css">
 </head>
 <body>
 
-<!-- ─────────────────────────── Login ─────────────────────────── -->
+<!-- ───────────────────────────── Sign in ───────────────────────────── -->
 <div id="login-view">
-  <div class="login-box">
-    <div class="brand">Deep<span>Log</span></div>
-    <div class="tagline">Sign in with your DeepLog account — the same email and
-      password you use in the phone app.</div>
+  <div class="auth">
+    <div class="brand">Deep<span class="mark">Log</span></div>
+    <div class="tag">Your personal map of the underwater world. Sign in with the
+      same account as the phone app.</div>
 
-    <div class="field"><input id="email" type="email" placeholder="Email" autocomplete="username"></div>
-    <div class="field"><input id="password" type="password" placeholder="Password" autocomplete="current-password"></div>
+    <div class="stack" style="gap:12px">
+      <div class="field">
+        <label for="email">Email</label>
+        <input class="input" id="email" type="email" autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input class="input" id="password" type="password" autocomplete="current-password">
+      </div>
+    </div>
 
-    <div class="row-split">
-      <button class="ghost" id="btn-signup">Create account</button>
-      <button id="btn-signin">Sign in</button>
+    <div class="row" style="margin-top:20px">
+      <button class="btn btn-ghost grow" id="btn-signup">Create account</button>
+      <button class="btn btn-primary grow" id="btn-signin">Sign in</button>
     </div>
     <div class="msg" id="login-msg"></div>
   </div>
 </div>
 
-<!-- ─────────────────────────── App ─────────────────────────── -->
+<!-- ───────────────────────────── App ───────────────────────────── -->
 <div id="app-view" class="hidden">
-  <header>
-    <div class="brand">Deep<span>Log</span></div>
-    <div class="spacer"></div>
-    <div class="who" id="who"></div>
-    <button class="ghost" id="btn-signout">Sign out</button>
+
+  <header class="topbar">
+    <div class="brand">Deep<span class="mark">Log</span></div>
+
+    <nav class="navlinks" aria-label="Main">
+      <button class="navlink active" data-nav="dives">Dives</button>
+      <button class="navlink" data-nav="sites">Sites</button>
+      <button class="navlink" data-nav="map">Map</button>
+      <button class="navlink" data-nav="stats">Statistics</button>
+    </nav>
+
+    <span class="grow"></span>
+
+    <button class="btn btn-primary" id="nav-log">
+      <svg class="ico"><use href="#i-plus"></use></svg> Log dive
+    </button>
+    <button class="account" id="btn-account" title="Account" aria-label="Account"></button>
   </header>
 
-  <nav>
-    <button data-tab="dives" class="active">Dive log</button>
-    <button data-tab="sites">Sites</button>
-    <button data-tab="stats">Stats</button>
-    <button data-tab="map">Map</button>
-  </nav>
-
   <main>
-    <!-- Dive list -->
-    <section id="tab-dives">
-      <div class="toolbar">
-        <input id="search" type="search" placeholder="Search by site, date or computer…">
-        <button class="ghost" id="btn-select">Set sites…</button>
-        <button class="ghost" id="btn-refresh">Refresh</button>
-      </div>
-      <div id="selbar-host"></div>
-      <div class="dive-grid" id="dive-list"></div>
-    </section>
-
-    <!-- Detail -->
-    <section id="tab-detail" class="hidden">
-      <button class="ghost" id="btn-back" style="margin-bottom:16px">← Back to dive log</button>
-      <div id="detail-body"></div>
-    </section>
-
-    <!-- Stats -->
-    <section id="tab-stats" class="hidden">
-      <div class="tiles" id="stat-tiles"></div>
-      <h3>Dives per year</h3>
-      <div id="per-year"></div>
-    </section>
-
-    <!-- Sites -->
-    <section id="tab-sites" class="hidden">
-      <div id="site-list"></div>
-    </section>
-
-    <!-- One site: dive count and the temperature-coloured profile -->
-    <section id="tab-site" class="hidden">
-      <button class="ghost" id="btn-site-back" style="margin-bottom:16px">← Back to sites</button>
-      <div id="site-body"></div>
-    </section>
-
-    <!-- Map -->
-    <section id="tab-map" class="hidden">
-      <div class="maptools">
-        <label class="chk"><input type="checkbox" id="cat-toggle" checked> Dive sites</label>
-        <label class="chk"><input type="checkbox" id="svc-toggle"> Clubs &amp; stays</label>
-        <span class="key"><i class="dot cat"></i>sites <span id="cat-count"></span></span>
-        <span class="key"><i class="dot mine"></i>your dives</span>
-        <span class="grow"></span>
-        <input id="map-search" type="search" placeholder="Jump to a site or country…">
-        <button class="ghost" id="btn-fit-mine">My dives</button>
-      </div>
-      <div id="map"></div>
-      <div class="note" id="map-note"></div>
-    </section>
+    <section id="view-dives" class="page"></section>
+    <section id="view-dive"  class="page hidden"></section>
+    <section id="view-sites" class="page hidden"></section>
+    <section id="view-site"  class="page hidden"></section>
+    <section id="view-map"   class="page hidden"></section>
+    <section id="view-stats" class="page hidden"></section>
   </main>
+
+  <nav class="tabbar" aria-label="Main">
+    <button class="tab active" data-nav="dives">
+      <svg class="ico"><use href="#i-log"></use></svg><span>Dives</span>
+    </button>
+    <button class="tab" data-nav="sites">
+      <svg class="ico"><use href="#i-pin"></use></svg><span>Sites</span>
+    </button>
+    <button class="tab tab-log" id="tab-log" aria-label="Log a dive">
+      <span class="fab"><svg class="ico"><use href="#i-plus"></use></svg></span>
+      <span class="lbl">Log</span>
+    </button>
+    <button class="tab" data-nav="map">
+      <svg class="ico"><use href="#i-map"></use></svg><span>Map</span>
+    </button>
+    <button class="tab" data-nav="stats">
+      <svg class="ico"><use href="#i-chart"></use></svg><span>Stats</span>
+    </button>
+  </nav>
 </div>
 
-<div id="modal-host"></div>
+<div id="sheet-host"></div>
+<div id="toast-host"></div>
+
+<!-- ── Icon sprite: one stroke weight and style throughout ── -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-depth" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3v14"/><path d="m7 12 5 5 5-5"/><path d="M4 21h16"/>
+  </symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 1.8"/>
+  </symbol>
+  <symbol id="i-temp" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 13.6V5a2 2 0 1 1 4 0v8.6a4.5 4.5 0 1 1-4 0Z"/>
+  </symbol>
+  <symbol id="i-gas" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="8" y="6" width="8" height="15" rx="3"/><path d="M10 6V4h4v2"/><path d="M8 10h8"/>
+  </symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11Z"/><circle cx="12" cy="10" r="2.6"/>
+  </symbol>
+  <symbol id="i-map" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m9 4-6 2.6v13L9 17l6 3 6-2.6v-13L15 7 9 4Z"/><path d="M9 4v13"/><path d="M15 7v13"/>
+  </symbol>
+  <symbol id="i-log" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 4.5h11a3 3 0 0 1 3 3v12H8a3 3 0 0 1-3-3v-12Z"/><path d="M5 16.5h14"/>
+    <path d="M9 8.5h6"/>
+  </symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M21 20H3"/>
+  </symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 5v14"/><path d="M5 12h14"/>
+  </symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/>
+  </symbol>
+  <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15 5l-7 7 7 7"/>
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m5 12.5 4.5 4.5L19 7"/>
+  </symbol>
+  <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 8c2.5-2.5 4.5-2.5 7 0s4.5 2.5 7 0 3.4-1.8 4 0"/>
+    <path d="M3 14c2.5-2.5 4.5-2.5 7 0s4.5 2.5 7 0 3.4-1.8 4 0"/>
+  </symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M6 7l1 13h10l1-13"/>
+  </symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 20h4L19 9a2.5 2.5 0 0 0-4-4L4 16v4Z"/>
+  </symbol>
+</svg>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-<script>
-(() => {
-'use strict';
-
-// ── Backend ────────────────────────────────────────────────────────────────
-// The anon key is a public, publishable identifier — it is already shipped in
-// the Android app. It grants nothing on its own: every read and write is
-// gated by row-level security policies keyed on the signed-in user.
-const SUPABASE_URL = 'https://bdquivweiecffyopsevs.supabase.co';
-const ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9' +
-  '.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkcXVpdndlaWVjZmZ5b3BzZXZzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyMTM2MjYsImV4cCI6MjA4Nzc4OTYyNn0' +
-  '.wXLAcj5NeyVnO2nTB5ZzNWwe_hFtPkZYHBKkMT2FmAo';
-
-const STORE_KEY = 'deeplog.session';
-
-// ── Session ────────────────────────────────────────────────────────────────
-
-let session = null;   // { access_token, refresh_token, email, user_id }
-let dives = [];
-
-function loadSession() {
-  try { return JSON.parse(localStorage.getItem(STORE_KEY) || 'null'); }
-  catch { return null; }
-}
-function saveSession(s) {
-  session = s;
-  try {
-    if (s) localStorage.setItem(STORE_KEY, JSON.stringify(s));
-    else localStorage.removeItem(STORE_KEY);
-  } catch { /* private browsing: stay signed in for this tab only */ }
-}
-
-async function authRequest(path, body) {
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', apikey: ANON_KEY },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error_description || data.msg || data.message || `Sign-in failed (${res.status})`);
-  }
-  return data;
-}
-
-function storeAuth(data) {
-  saveSession({
-    access_token:  data.access_token,
-    refresh_token: data.refresh_token,
-    email:         data.user && data.user.email,
-    user_id:       data.user && data.user.id,
-  });
-}
-
-async function signIn(email, password) {
-  storeAuth(await authRequest('token?grant_type=password', { email, password }));
-}
-
-async function signUp(email, password) {
-  const data = await authRequest('signup', { email, password });
-  // A project with email confirmation on returns a user but no session.
-  if (data.access_token) storeAuth(data);
-  return !!data.access_token;
-}
-
-async function refreshSession() {
-  if (!session || !session.refresh_token) return false;
-  try {
-    const data = await authRequest('token?grant_type=refresh_token',
-                                   { refresh_token: session.refresh_token });
-    storeAuth(data);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ── REST ───────────────────────────────────────────────────────────────────
-
-async function rest(path, { retry = true, method = 'GET', body = null, prefer = null } = {}) {
-  const headers = {
-    apikey: ANON_KEY,
-    Authorization: `Bearer ${session.access_token}`,
-    Accept: 'application/json',
-  };
-  if (body) headers['Content-Type'] = 'application/json';
-  if (prefer) headers.Prefer = prefer;
-
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    method, headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  // Access tokens are short-lived; swap in a fresh one and try once more.
-  if (res.status === 401 && retry) {
-    if (await refreshSession()) return rest(path, { retry: false, method, body, prefer });
-    signOut();
-    throw new Error('Session expired — please sign in again');
-  }
-  if (res.status === 403) {
-    // Almost always a row-level-security policy refusing the write.
-    throw new Error('The database refused that change (403). The dives table ' +
-                    'likely has no update policy for your account.');
-  }
-  if (!res.ok) {
-    let detail = '';
-    try { detail = (await res.json()).message || ''; } catch { /* no body */ }
-    throw new Error(`Request failed (${res.status})${detail ? ': ' + detail : ''}`);
-  }
-  if (res.status === 204) return null;
-  return res.json().catch(() => null);
-}
-
-const fetchDives = () =>
-  rest('dives?select=*&order=date.desc,time.desc');
-
-// ── Formatting ─────────────────────────────────────────────────────────────
-
-const num = (v, d = 1) => (v === null || v === undefined || isNaN(v)) ? '–' : Number(v).toFixed(d);
-
-function duration(seconds) {
-  if (!seconds) return '–';
-  const m = Math.floor(seconds / 60), s = seconds % 60;
-  if (m < 60) return `${m}:${String(s).padStart(2, '0')}`;
-  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
-}
-
-function prettyDate(iso) {
-  if (!iso) return '–';
-  const d = new Date(iso + 'T00:00:00');
-  if (isNaN(d)) return iso;
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
-  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-// Rows arrive as JSON columns; Postgres may hand them back as text.
-function asArray(v) {
-  if (Array.isArray(v)) return v;
-  if (typeof v === 'string') { try { return JSON.parse(v) || []; } catch { return []; } }
-  return [];
-}
-
-// ── Site catalogue ─────────────────────────────────────────────────────────
-// The phone app only writes site_lat/site_lon when the dive's site name
-// matched one the user had already saved, so most rows arrive with a name and
-// no position. The bundled catalogue (the same file the app ships) fills those
-// in by name, which is what puts dives on the map at all.
-
-let catalogue = null;          // Map of folded name -> { lat, lon }
-let catalogueSites = [];       // the full entries, for the map and the picker
-
-const foldName = (s) => String(s ?? '')
-  .toLowerCase().normalize('NFD').replace(/\p{Mn}+/gu, '').trim();
-
-/**
- * Two catalogues are loaded and merged:
- *
- *  - dive_sites.json — OpenStreetMap, worldwide, but nearly empty over Finland
- *  - finnish_sites.json — the DeepLog Google My Maps map, which is where the
- *    Finnish lakes, quarries, mines and Baltic wrecks actually are
- *
- * Where both describe the same place the My Maps entry wins: it is the
- * curated one, and it carries a description and a source link.
- */
-async function loadCatalogue() {
-  if (catalogue) return catalogue;
-  catalogue = new Map();
-
-  const grab = async (file, src) => {
-    try {
-      const res = await fetch(file);
-      if (!res.ok) throw new Error(String(res.status));
-      return ((await res.json()).sites || []).map((s) => ({ ...s, src }));
-    } catch {
-      return [];       // a missing catalogue must not break the page
-    }
-  };
-
-  const [osm, fin] = await Promise.all([
-    grab('dive_sites.json', 'osm'),
-    grab('finnish_sites.json', 'mymaps'),
-  ]);
-
-  // Drop OSM entries that duplicate a My Maps one. Position alone is not
-  // enough: the two sources pin Ojamon 200 m apart, while genuinely distinct
-  // sites on a reef can be closer than that. So require both a loose distance
-  // and a shared word in the name — "Ojamon kaivos" and "Ojamon kaivoslampi"
-  // share "ojamon", whereas two unrelated neighbours share nothing.
-  const metres = (a, b) => {
-    const dLat = (a.lat - b.lat) * 111320;
-    const dLon = (a.lon - b.lon) * 111320 * Math.cos(a.lat * Math.PI / 180);
-    return Math.hypot(dLat, dLon);
-  };
-  const words = (n) => new Set(
-    foldName(n).split(/[^a-z0-9]+/).filter((w) => w.length >= 4));
-  const sameName = (a, b) => {
-    const wa = words(a.name), wb = words(b.name);
-    for (const w of wa) if (wb.has(w)) return true;
-    return false;
-  };
-  const duplicate = (o, f) =>
-    metres(o, f) < 150 || (metres(o, f) < 500 && sameName(o, f));
-
-  const keptOsm = osm.filter((o) => !fin.some((f) => duplicate(o, f)));
-
-  catalogueSites = fin.concat(keptOsm);
-  for (const s of catalogueSites) {
-    const k = foldName(s.name);
-    if (k && !catalogue.has(k)) catalogue.set(k, { lat: s.lat, lon: s.lon });
-  }
-  return catalogue;
-}
-
-/** Coordinates for a dive: its own if present, otherwise looked up by name. */
-function coordsFor(d) {
-  if (d.site_lat != null && d.site_lon != null) {
-    return { lat: +d.site_lat, lon: +d.site_lon, fromCatalogue: false };
-  }
-  const hit = catalogue && d.site_name && catalogue.get(foldName(d.site_name));
-  return hit ? { lat: hit.lat, lon: hit.lon, fromCatalogue: true } : null;
-}
-
-/** Dives grouped by site name, newest-first within each site. */
-function groupBySite() {
-  const groups = new Map();
-  for (const d of dives) {
-    const name = (d.site_name || '').trim();
-    if (!name) continue;
-    if (!groups.has(name)) groups.set(name, []);
-    groups.get(name).push(d);
-  }
-  return groups;
-}
-
-// ── Dive list ──────────────────────────────────────────────────────────────
-
-function renderList() {
-  const q = document.getElementById('search').value.trim().toLowerCase();
-  const shown = !q ? dives : dives.filter((d) =>
-    [d.site_name, d.date, d.device_name, d.divemode]
-      .some((f) => String(f ?? '').toLowerCase().includes(q)));
-
-  const list = document.getElementById('dive-list');
-  if (!shown.length) {
-    list.innerHTML = `<div class="empty">${
-      dives.length ? 'No dives match that search.'
-                   : 'No dives yet. Download some in the phone app and they will appear here.'
-    }</div>`;
-    return;
-  }
-
-  // Dive numbers count up from the oldest dive, matching the phone app.
-  const order = new Map();
-  [...dives].reverse().forEach((d, i) => order.set(d, i + 1));
-
-  list.innerHTML = shown.map((d) => `
-    <div class="dive-card" data-idx="${dives.indexOf(d)}">
-      <div class="dive-num">${order.get(d)}</div>
-      <div class="dive-main">
-        <div class="site">${esc(d.site_name || 'Unnamed site')}</div>
-        <div class="meta">${prettyDate(d.date)} · ${esc((d.time || '').slice(0, 5))}${
-          d.device_name ? ' · ' + esc(d.device_name) : ''}</div>
-      </div>
-      <div class="dive-stats">
-        <div class="depth">${num(d.maxdepth)} m</div>
-        <div class="dur">${duration(d.duration)}</div>
-      </div>
-    </div>`).join('');
-
-  // In selection mode a tap picks the dive instead of opening it.
-  list.querySelectorAll('.dive-card').forEach((el) => {
-    const d = dives[+el.dataset.idx];
-    if (selecting && d.id != null && selected.has(d.id)) el.classList.add('picked');
-    el.addEventListener('click', () => {
-      if (!selecting) return showDetail(d, order);
-      if (d.id == null) return;
-      selected.has(d.id) ? selected.delete(d.id) : selected.add(d.id);
-      el.classList.toggle('picked');
-      drawSelBar();
-    });
-  });
-  drawSelBar();
-}
-
-/** The bar shown while picking dives to set a site on. */
-function drawSelBar() {
-  const host = document.getElementById('selbar-host');
-  if (!selecting) { host.innerHTML = ''; return; }
-
-  const n = selected.size;
-  host.innerHTML = `
-    <div class="selbar">
-      <span class="grow">${n ? `${n} dive${n === 1 ? '' : 's'} selected` : 'Tap dives to select them'}</span>
-      <button class="ghost" id="sel-none">Without a site</button>
-      <button class="ghost" id="sel-cancel">Cancel</button>
-      <button id="sel-apply"${n ? '' : ' disabled'}>Set site…</button>
-    </div>`;
-
-  document.getElementById('sel-cancel').addEventListener('click', () => {
-    selecting = false; selected.clear(); renderList();
-  });
-  // Selecting every dive that has no site is the usual case by far.
-  document.getElementById('sel-none').addEventListener('click', () => {
-    selected.clear();
-    for (const d of dives) if (d.id != null && !(d.site_name || '').trim()) selected.add(d.id);
-    renderList();
-  });
-  document.getElementById('sel-apply').addEventListener('click', () => {
-    const targets = dives.filter((d) => selected.has(d.id));
-    if (!targets.length) return;
-    assignSite(targets, (count, site) => {
-      selecting = false; selected.clear();
-      renderList();
-      document.getElementById('selbar-host').innerHTML =
-        `<div class="note" style="margin:0 0 12px;color:var(--ok)">
-           Set “${esc(site.name)}” on ${count} dive${count === 1 ? '' : 's'}.
-           ${site.lat == null ? 'No coordinates given, so it will not appear on the map.'
-                              : 'They will now show on the Map and Sites tabs.'}
-         </div>`;
-    });
-  });
-}
-
-// ── Profile chart ──────────────────────────────────────────────────────────
-
-/**
- * Depth and temperature against time, drawn as inline SVG.
- *
- * Samples are stored compactly as [time_ms, depth_m, temp_c]. Depth grows
- * downward, so the y axis is inverted; temperature gets its own scale on the
- * right and is only drawn when the dive actually recorded a range.
- */
-function profileSvg(samples) {
-  const pts = samples
-    .map((s) => ({ t: s[0] / 1000, d: s[1], c: s[2] }))
-    .filter((p) => isFinite(p.t) && isFinite(p.d));
-  if (pts.length < 2) return '<div class="empty">No profile recorded for this dive.</div>';
-
-  const W = 900, H = 340, L = 52, R = 52, T = 16, B = 34;
-  const gw = W - L - R, gh = H - T - B;
-
-  const maxT = Math.max(...pts.map((p) => p.t)) || 1;
-  const maxD = Math.max(...pts.map((p) => p.d)) || 1;
-  const depthTop = maxD * 1.08;
-
-  const temps = pts.map((p) => p.c).filter((c) => isFinite(c) && c !== 0);
-  const hasTemp = temps.length > 1 && Math.max(...temps) > Math.min(...temps);
-  const tMin = hasTemp ? Math.min(...temps) : 0;
-  const tMax = hasTemp ? Math.max(...temps) : 1;
-
-  const x = (t) => L + (t / maxT) * gw;
-  const yD = (d) => T + (d / depthTop) * gh;
-  const yT = (c) => T + gh - ((c - tMin) / (tMax - tMin || 1)) * gh * 0.82 - gh * 0.09;
-
-  const depthPath = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${yD(p.d).toFixed(1)}`).join('');
-  const fillPath = `${depthPath}L${x(pts[pts.length - 1].t).toFixed(1)},${yD(0)}L${x(pts[0].t).toFixed(1)},${yD(0)}Z`;
-
-  let tempPath = '';
-  if (hasTemp) {
-    let started = false;
-    for (const p of pts) {
-      if (!isFinite(p.c) || p.c === 0) continue;
-      tempPath += `${started ? 'L' : 'M'}${x(p.t).toFixed(1)},${yT(p.c).toFixed(1)}`;
-      started = true;
-    }
-  }
-
-  // Grid: depth every 5/10/20 m depending on how deep the dive went.
-  const step = maxD <= 12 ? 2 : maxD <= 30 ? 5 : maxD <= 60 ? 10 : 20;
-  let grid = '';
-  for (let d = 0; d <= depthTop; d += step) {
-    const y = yD(d).toFixed(1);
-    grid += `<line x1="${L}" y1="${y}" x2="${W - R}" y2="${y}" stroke="#23415e" stroke-width="1"/>`;
-    grid += `<text x="${L - 8}" y="${+y + 4}" fill="#5f7f96" font-size="11" text-anchor="end">${d}</text>`;
-  }
-  // Time axis: about six labels, on whole minutes.
-  const minutes = maxT / 60;
-  const mStep = Math.max(1, Math.ceil(minutes / 6));
-  for (let m = 0; m <= minutes; m += mStep) {
-    const px = x(m * 60).toFixed(1);
-    grid += `<line x1="${px}" y1="${T}" x2="${px}" y2="${T + gh}" stroke="#1a3049" stroke-width="1"/>`;
-    grid += `<text x="${px}" y="${H - 12}" fill="#5f7f96" font-size="11" text-anchor="middle">${m}′</text>`;
-  }
-  if (hasTemp) {
-    for (const c of [tMin, tMax]) {
-      grid += `<text x="${W - R + 8}" y="${(yT(c) + 4).toFixed(1)}" fill="#ffb74d" font-size="11">${c.toFixed(1)}°</text>`;
-    }
-  }
-
-  return `
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
-         aria-label="Dive profile: maximum depth ${maxD.toFixed(1)} metres over ${Math.round(minutes)} minutes">
-      <rect width="${W}" height="${H}" fill="#0d1b2a" rx="8"/>
-      ${grid}
-      <path d="${fillPath}" fill="rgba(79,195,247,.16)"/>
-      <path d="${depthPath}" fill="none" stroke="#4fc3f7" stroke-width="2.5"
-            stroke-linejoin="round" stroke-linecap="round"/>
-      ${tempPath ? `<path d="${tempPath}" fill="none" stroke="#ffb74d" stroke-width="2"
-            stroke-linejoin="round" stroke-linecap="round" opacity=".9"/>` : ''}
-    </svg>
-    <div class="legend">
-      <span><i style="background:#4fc3f7"></i>Depth (m)</span>
-      ${hasTemp ? '<span><i style="background:#ffb74d"></i>Temperature (°C)</span>' : ''}
-    </div>`;
-}
-
-// ── Assigning a site to dives ──────────────────────────────────────────────
-// The phone app only records a site when you pick one by hand, so most dives
-// arrive with no site_name and nothing to place them by. These let you set one
-// here instead, writing it straight back to the dive rows.
-
-let selecting = false;
-const selected = new Set();      // dive.id
-
-/** Writes name and coordinates onto the given dives. */
-async function applySiteTo(targets, site) {
-  const fields = {
-    site_name: site.name,
-    site_lat: site.lat == null ? null : Number(site.lat),
-    site_lon: site.lon == null ? null : Number(site.lon),
-  };
-
-  let done = 0;
-  for (const d of targets) {
-    if (d.id == null) throw new Error('This dive has no id, so it cannot be updated');
-    await rest(`dives?id=eq.${encodeURIComponent(d.id)}`, {
-      method: 'PATCH', body: fields, prefer: 'return=minimal',
-    });
-    Object.assign(d, fields);    // keep the local copy in step
-    done++;
-  }
-  return done;
-}
-
-function closeModal() { document.getElementById('modal-host').innerHTML = ''; }
-
-/**
- * Search the bundled catalogue, or type a name and optional coordinates for a
- * site that is not in it.
- */
-async function openSitePicker(count, onChoose) {
-  await loadCatalogue();
-  const entries = [];
-  try {
-    const res = await fetch('dive_sites.json');
-    if (res.ok) entries.push(...((await res.json()).sites || []));
-  } catch { /* fall back to manual entry */ }
-
-  const host = document.getElementById('modal-host');
-  host.innerHTML = `
-    <div class="modal" id="site-modal">
-      <div class="modal-box">
-        <h3>Set the site for ${count} dive${count === 1 ? '' : 's'}</h3>
-        <input id="pick-q" type="search" placeholder="Search ${entries.length} known sites…">
-        <div class="pick-list" id="pick-list"></div>
-        <details style="margin-top:12px">
-          <summary style="cursor:pointer;color:var(--muted);font-size:13px">Not listed? Enter it yourself</summary>
-          <div style="margin-top:10px;display:grid;gap:8px">
-            <input id="pick-name" placeholder="Site name">
-            <div style="display:flex;gap:8px">
-              <input id="pick-lat" placeholder="Latitude (optional)" inputmode="decimal">
-              <input id="pick-lon" placeholder="Longitude (optional)" inputmode="decimal">
-            </div>
-            <button id="pick-custom">Use this site</button>
-          </div>
-        </details>
-        <div class="modal-actions"><button class="ghost" id="pick-cancel">Cancel</button></div>
-      </div>
-    </div>`;
-
-  const list = document.getElementById('pick-list');
-  const draw = (q) => {
-    const f = foldName(q);
-    const hits = (f ? entries.filter((e) => foldName(e.name).includes(f) ||
-                                            foldName(e.country || '').includes(f))
-                    : entries).slice(0, 150);
-    list.innerHTML = hits.length
-      ? hits.map((e, i) => `
-          <div class="pick-row" data-i="${i}">
-            <div class="n">${esc(e.name)}</div>
-            <div class="s">${esc([e.country, e.region, e.desc].filter(Boolean).join(' · ')
-                              || `${e.lat.toFixed(4)}, ${e.lon.toFixed(4)}`)}</div>
-          </div>`).join('')
-      : '<div class="empty" style="padding:24px">No match — use “Not listed?” below.</div>';
-    list.querySelectorAll('.pick-row').forEach((row) => {
-      row.addEventListener('click', () => {
-        const e = hits[+row.dataset.i];
-        closeModal();
-        onChoose({ name: e.name, lat: e.lat, lon: e.lon });
-      });
-    });
-  };
-  draw('');
-
-  document.getElementById('pick-q').addEventListener('input', (ev) => draw(ev.target.value));
-  document.getElementById('pick-cancel').addEventListener('click', closeModal);
-  document.getElementById('site-modal').addEventListener('click', (ev) => {
-    if (ev.target.id === 'site-modal') closeModal();
-  });
-  document.getElementById('pick-custom').addEventListener('click', () => {
-    const name = document.getElementById('pick-name').value.trim();
-    if (!name) return;
-    const lat = parseFloat(document.getElementById('pick-lat').value);
-    const lon = parseFloat(document.getElementById('pick-lon').value);
-    closeModal();
-    onChoose({ name, lat: isFinite(lat) ? lat : null, lon: isFinite(lon) ? lon : null });
-  });
-}
-
-/** Runs the picker for some dives and reports the outcome. */
-function assignSite(targets, after) {
-  openSitePicker(targets.length, async (site) => {
-    const list = document.getElementById('dive-list');
-    try {
-      const n = await applySiteTo(targets, site);
-      if (after) after(n, site);
-      else renderList();
-      // Anything cached from the old data is now stale.
-      catalogue && catalogue.set(foldName(site.name),
-        site.lat != null ? { lat: site.lat, lon: site.lon } : undefined);
-    } catch (e) {
-      if (list) list.insertAdjacentHTML('beforebegin',
-        `<div class="note" style="color:var(--bad)">${esc(e.message)}</div>`);
-      else alert(e.message);
-    }
-  });
-}
-
-// ── Temperature-coloured site profile ──────────────────────────────────────
-
-/**
- * Blue (cold) through green to red (warm), across the temperature range that
- * this site actually recorded — a fixed absolute scale would render a Finnish
- * quarry as one flat shade of blue.
- */
-function tempColour(c, lo, hi) {
-  const t = hi > lo ? (c - lo) / (hi - lo) : 0.5;
-  const stops = [
-    [0.0, [ 49,  84, 196]],   // deep blue
-    [0.35, [ 38, 166, 214]],  // cyan
-    [0.6, [ 94, 190, 106]],   // green
-    [0.8, [242, 190,  70]],   // amber
-    [1.0, [225,  74,  56]],   // red
-  ];
-  const x = Math.max(0, Math.min(1, t));
-  for (let i = 1; i < stops.length; i++) {
-    if (x <= stops[i][0]) {
-      const [a, ca] = stops[i - 1], [b, cb] = stops[i];
-      const f = (x - a) / (b - a || 1);
-      const ch = ca.map((v, j) => Math.round(v + (cb[j] - v) * f));
-      return `rgb(${ch[0]},${ch[1]},${ch[2]})`;
-    }
-  }
-  return 'rgb(225,74,56)';
-}
-
-/**
- * Every dive at one site on a single chart: time across, depth down, each
- * segment coloured by the temperature recorded there.
- *
- * Drawn as one <path> per colour bucket rather than per sample — a 3,000-sample
- * dive would otherwise become 3,000 SVG elements and crawl.
- */
-function siteProfileSvg(siteDives) {
-  const tracks = siteDives
-    .map((d) => asArray(d.samples)
-      .map((s) => ({ t: s[0] / 1000, d: s[1], c: s[2] }))
-      .filter((p) => isFinite(p.t) && isFinite(p.d)))
-    .filter((pts) => pts.length > 1);
-
-  if (!tracks.length) {
-    return '<div class="empty">No profiles recorded at this site yet.</div>';
-  }
-
-  const all = tracks.flat();
-  const maxT = Math.max(...all.map((p) => p.t)) || 1;
-  const maxD = Math.max(...all.map((p) => p.d)) || 1;
-  const depthTop = maxD * 1.08;
-
-  const temps = all.map((p) => p.c).filter((c) => isFinite(c) && c !== 0);
-  const hasTemp = temps.length > 0;
-  const lo = hasTemp ? Math.min(...temps) : 0;
-  const hi = hasTemp ? Math.max(...temps) : 1;
-
-  const W = 900, H = 380, L = 54, R = 66, T = 16, B = 34;
-  const gw = W - L - R, gh = H - T - B;
-  const x = (t) => L + (t / maxT) * gw;
-  const y = (d) => T + (d / depthTop) * gh;
-
-  // Grid.
-  const step = maxD <= 12 ? 2 : maxD <= 30 ? 5 : maxD <= 60 ? 10 : 20;
-  let grid = '';
-  for (let d = 0; d <= depthTop; d += step) {
-    const py = y(d).toFixed(1);
-    grid += `<line x1="${L}" y1="${py}" x2="${W - R}" y2="${py}" stroke="#23415e"/>`;
-    grid += `<text x="${L - 8}" y="${+py + 4}" fill="#5f7f96" font-size="11" text-anchor="end">${d}</text>`;
-  }
-  const minutes = maxT / 60;
-  const mStep = Math.max(1, Math.ceil(minutes / 6));
-  for (let m = 0; m <= minutes; m += mStep) {
-    const px = x(m * 60).toFixed(1);
-    grid += `<line x1="${px}" y1="${T}" x2="${px}" y2="${T + gh}" stroke="#1a3049"/>`;
-    grid += `<text x="${px}" y="${H - 12}" fill="#5f7f96" font-size="11" text-anchor="middle">${m}′</text>`;
-  }
-
-  // Group consecutive segments into colour buckets.
-  const BUCKETS = 24;
-  const bucketOf = (c) => (!isFinite(c) || c === 0) ? -1
-    : Math.max(0, Math.min(BUCKETS - 1, Math.floor((c - lo) / ((hi - lo) || 1) * BUCKETS)));
-
-  const paths = new Map();       // bucket -> path data
-  const addSeg = (b, p, q) => {
-    const dstr = `M${x(p.t).toFixed(1)},${y(p.d).toFixed(1)}L${x(q.t).toFixed(1)},${y(q.d).toFixed(1)}`;
-    paths.set(b, (paths.get(b) || '') + dstr);
-  };
-  for (const pts of tracks) {
-    for (let i = 1; i < pts.length; i++) addSeg(bucketOf(pts[i].c), pts[i - 1], pts[i]);
-  }
-
-  let lines = '';
-  for (const [b, dstr] of [...paths.entries()].sort((a, z) => a[0] - z[0])) {
-    const stroke = b < 0 ? '#3d5a75'
-      : tempColour(lo + (b + 0.5) / BUCKETS * (hi - lo), lo, hi);
-    lines += `<path d="${dstr}" fill="none" stroke="${stroke}" stroke-width="2.2"
-                    stroke-linecap="round" opacity="${tracks.length > 6 ? 0.65 : 0.9}"/>`;
-  }
-
-  // Colour bar for the temperature scale.
-  let bar = '';
-  if (hasTemp) {
-    const bx = W - R + 14, bw = 12, bh = gh * 0.7, by = T + gh * 0.1;
-    for (let i = 0; i < 40; i++) {
-      const c = lo + (i / 39) * (hi - lo);
-      bar += `<rect x="${bx}" y="${(by + bh - (i + 1) / 40 * bh).toFixed(1)}"
-                    width="${bw}" height="${(bh / 40 + 0.6).toFixed(2)}"
-                    fill="${tempColour(c, lo, hi)}"/>`;
-    }
-    bar += `<text x="${bx + bw + 4}" y="${(by + 9).toFixed(1)}" fill="#8fb0c8" font-size="11">${hi.toFixed(1)}°</text>`;
-    bar += `<text x="${bx + bw + 4}" y="${(by + bh).toFixed(1)}" fill="#8fb0c8" font-size="11">${lo.toFixed(1)}°</text>`;
-  }
-
-  return `
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
-         aria-label="Depth against time for ${tracks.length} dive(s), coloured by water temperature from ${lo.toFixed(1)} to ${hi.toFixed(1)} degrees Celsius">
-      <rect width="${W}" height="${H}" fill="#0d1b2a" rx="8"/>
-      ${grid}${lines}${bar}
-      <text x="${L}" y="${T - 3}" fill="#5f7f96" font-size="11">depth (m) / time (min)</text>
-    </svg>
-    <div class="legend">
-      ${hasTemp ? '<span>Colour = water temperature (°C)</span>'
-                : '<span>No temperature recorded at this site</span>'}
-      <span>${tracks.length} profile${tracks.length === 1 ? '' : 's'}</span>
-    </div>`;
-}
-
-// ── Sites ──────────────────────────────────────────────────────────────────
-
-async function renderSites() {
-  await loadCatalogue();
-  const groups = groupBySite();
-  const el = document.getElementById('site-list');
-
-  if (!groups.size) {
-    el.innerHTML = `<div class="empty">None of your dives have a site name yet.<br>
-      Assign sites in the phone app and they will show up here.</div>`;
-    return;
-  }
-
-  const rows = [...groups.entries()]
-    .map(([name, ds]) => siteRow(name, ds))
-    .sort((a, b) => b.ds.length - a.ds.length || a.name.localeCompare(b.name));
-
-  el.innerHTML = `
-    <div class="note" style="margin:0 0 14px">${groups.size} site(s) ·
-      ${rows.reduce((a, r) => a + r.ds.length, 0)} dive(s) with a site name</div>
-    <div class="dive-grid">
-      ${rows.map((r, i) => `
-        <div class="dive-card" data-site="${i}">
-          <div class="dive-num">${r.ds.length}</div>
-          <div class="dive-main">
-            <div class="site">${esc(r.name)}${r.located ? '' : ' <span style="color:var(--dim);font-weight:400">· no position</span>'}</div>
-            <div class="meta">last dived ${prettyDate(r.last)}</div>
-          </div>
-          <div class="dive-stats">
-            <div class="depth">${num(r.deepest)} m</div>
-            <div class="dur">deepest</div>
-          </div>
-        </div>`).join('')}
-    </div>`;
-
-  el.querySelectorAll('.dive-card').forEach((card) => {
-    card.addEventListener('click', () => showSite(rows[+card.dataset.site]));
-  });
-}
-
-/** The shape the site view expects; `ds` may be empty for a site never dived. */
-function siteRow(name, ds) {
-  return {
-    name, ds,
-    deepest: ds.length ? Math.max(...ds.map((d) => Number(d.maxdepth) || 0)) : 0,
-    last: ds.length ? ds.map((d) => d.date).sort().slice(-1)[0] : null,
-    located: ds.length ? !!coordsFor(ds[0]) : false,
-  };
-}
-
-/**
- * Opens the site view for a name, whether or not any dives were logged there.
- * This is how the map popups reach the stats and the temperature profile.
- */
-function openSiteByName(name) {
-  const groups = groupBySite();
-  let ds = groups.get(name);
-  if (!ds) {
-    // Popup names come from the catalogue, the log's own site_name, or a
-    // slightly different spelling of either; fall back to a folded match.
-    const target = foldName(name);
-    for (const [k, v] of groups) if (foldName(k) === target) { ds = v; break; }
-  }
-  showSite(siteRow(name, ds || []));
-}
-
-function showSite(row) {
-  const dived = row.ds.length > 0;
-  const temps = row.ds.flatMap((d) => [d.temp_min, d.temp_max])
-    .filter((t) => t != null && isFinite(t)).map(Number);
-  const totalTime = row.ds.reduce((a, d) => a + (Number(d.duration) || 0), 0);
-
-  // A site reached from the map may never have been dived, so fall back to
-  // the catalogue for its position and description.
-  const entry = catalogueSites.find((c) => foldName(c.name) === foldName(row.name));
-  const pos = dived ? coordsFor(row.ds[0])
-            : entry ? { lat: entry.lat, lon: entry.lon, fromCatalogue: true }
-            : null;
-
-  const tiles = [
-    ['Dives recorded', row.ds.length],
-    ['Deepest', dived ? `${num(row.deepest)}<small> m</small>` : '–'],
-    ['Total time', dived
-      ? `${Math.floor(totalTime / 3600)}<small> h</small> ${Math.floor((totalTime % 3600) / 60)}<small> m</small>`
-      : '–'],
-    ['Coldest', temps.length ? `${num(Math.min(...temps))}<small> °C</small>` : '–'],
-    ['Warmest', temps.length ? `${num(Math.max(...temps))}<small> °C</small>` : '–'],
-    ['Last dived', dived ? prettyDate(row.last) : 'never'],
-  ];
-
-  const where = entry
-    ? [entry.country, entry.region, entry.desc].filter(Boolean).join(' · ')
-    : '';
-
-  document.getElementById('site-body').innerHTML = `
-    <div class="detail-head"><h2>${esc(row.name)}</h2></div>
-    <div class="detail-sub">${
-      dived ? `${row.ds.length} recorded dive${row.ds.length === 1 ? '' : 's'}`
-            : 'No dives logged here yet'}${
-      where ? ` · ${esc(where)}` : ''}${
-      pos ? ` · ${num(pos.lat, 5)}, ${num(pos.lon, 5)}${
-        pos.fromCatalogue ? ' (from the site catalogue)' : ''}` : ''}</div>
-
-    ${dived ? `<div class="profile-wrap">${siteProfileSvg(row.ds)}</div>`
-            : `<div class="profile-wrap"><div class="empty">
-                 No dives logged here, so there is no profile to draw.
-               </div></div>`}
-
-    <div class="tiles">
-      ${tiles.map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('')}
-    </div>
-
-    ${entry && entry.notes ? `<h3>About this site</h3>
-      <div class="note" style="margin:0">${esc(entry.notes)}</div>` : ''}
-    ${entry && entry.source ? `<div class="note" style="margin-top:6px">
-      <a href="${esc(entry.source)}" target="_blank" rel="noopener">source</a></div>` : ''}
-
-    ${dived ? `<h3>Dives here</h3>
-    <table>
-      <tr><th>Date</th><th>Max depth</th><th>Duration</th><th>Water</th></tr>
-      ${[...row.ds].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((d) => `
-        <tr><td>${prettyDate(d.date)}</td><td>${num(d.maxdepth)} m</td>
-        <td>${duration(d.duration)}</td>
-        <td>${d.temp_min != null ? num(d.temp_min) + ' °C' : '–'}</td></tr>`).join('')}
-    </table>` : ''}
-
-    ${pos ? `<div class="note">
-      <a href="https://www.openstreetmap.org/?mlat=${pos.lat}&mlon=${pos.lon}#map=14/${pos.lat}/${pos.lon}"
-         target="_blank" rel="noopener">open in OpenStreetMap</a></div>` : ''}`;
-
-  switchTab('site');
-}
-
-// ── Detail ─────────────────────────────────────────────────────────────────
-
-function showDetail(d, order) {
-  const samples = asArray(d.samples);
-  const gases = asArray(d.gasmixes);
-  const tanks = asArray(d.tanks);
-
-  const gasName = (g) => {
-    const o2 = Number(g.o2) || 0, he = Number(g.he) || 0;
-    if (he > 0) return `Tx ${Math.round(o2)}/${Math.round(he)}`;
-    if (Math.round(o2) === 21) return 'Air';
-    return `EAN${Math.round(o2)}`;
-  };
-
-  const tiles = [
-    ['Max depth', `${num(d.maxdepth)}<small> m</small>`],
-    ['Avg depth', `${num(d.avgdepth)}<small> m</small>`],
-    ['Duration', duration(d.duration)],
-    ['Water temp', d.temp_min != null ? `${num(d.temp_min)}<small> °C</small>` : '–'],
-    ['Air temp', d.temp_surface != null ? `${num(d.temp_surface)}<small> °C</small>` : '–'],
-    ['Mode', esc(d.divemode || 'OC')],
-  ];
-
-  document.getElementById('detail-body').innerHTML = `
-    <div class="detail-head">
-      <h2>Dive ${order.get(d) ?? ''} — ${esc(d.site_name || 'Unnamed site')}</h2>
-    </div>
-    <div class="detail-sub">${prettyDate(d.date)} at ${esc((d.time || '').slice(0, 5))}${
-      d.device_name ? ' · ' + esc(d.device_name) : ''}</div>
-
-    <div class="profile-wrap">${profileSvg(samples)}</div>
-
-    <div class="tiles">
-      ${tiles.map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('')}
-    </div>
-
-    ${gases.length ? `
-      <h3>Gas mixes</h3>
-      <table>
-        <tr><th>Mix</th><th>O₂</th><th>He</th><th>N₂</th></tr>
-        ${gases.map((g) => `<tr>
-          <td>${gasName(g)}</td><td>${num(g.o2)} %</td>
-          <td>${num(g.he)} %</td><td>${num(g.n2)} %</td></tr>`).join('')}
-      </table>` : ''}
-
-    ${tanks.length ? `
-      <h3>Cylinders</h3>
-      <table>
-        <tr><th>Size</th><th>Working</th><th>Start</th><th>End</th><th>Used</th></tr>
-        ${tanks.map((t) => {
-          const used = (Number(t.start) || 0) - (Number(t.end) || 0);
-          return `<tr>
-            <td>${num(t.volume)} L</td>
-            <td>${num(t.workpressure, 0)} bar</td>
-            <td>${num(t.start, 0)} bar</td>
-            <td>${num(t.end, 0)} bar</td>
-            <td>${used > 0 ? num(used, 0) + ' bar' : '–'}</td></tr>`;
-        }).join('')}
-      </table>` : ''}
-
-    <h3>Dive site</h3>
-    <div class="note" style="margin:0 0 10px">${
-      d.site_name ? esc(d.site_name) : 'No site set for this dive.'}</div>
-    <button class="ghost" id="btn-set-site">${d.site_name ? 'Change site' : 'Set dive site'}</button>
-
-    ${(d.site_lat != null && d.site_lon != null) ? `
-      <h3>Location</h3>
-      <div class="note">${num(d.site_lat, 5)}, ${num(d.site_lon, 5)}
-        — <a href="https://www.openstreetmap.org/?mlat=${d.site_lat}&mlon=${d.site_lon}#map=13/${d.site_lat}/${d.site_lon}"
-             target="_blank" rel="noopener">open in OpenStreetMap</a></div>` : ''}
-  `;
-  const setBtn = document.getElementById('btn-set-site');
-  if (setBtn) {
-    setBtn.addEventListener('click', () => assignSite([d], () => showDetail(d, order)));
-  }
-  switchTab('detail');
-}
-
-// ── Stats ──────────────────────────────────────────────────────────────────
-
-function renderStats() {
-  const n = dives.length;
-  const totalSeconds = dives.reduce((a, d) => a + (Number(d.duration) || 0), 0);
-  const deepest = dives.reduce((a, d) => Math.max(a, Number(d.maxdepth) || 0), 0);
-  const coldest = dives.reduce((a, d) =>
-    (d.temp_min != null && (a === null || d.temp_min < a)) ? Number(d.temp_min) : a, null);
-  const sites = new Set(dives.map((d) => d.site_name).filter(Boolean)).size;
-  const avgDepth = n ? dives.reduce((a, d) => a + (Number(d.maxdepth) || 0), 0) / n : 0;
-
-  const tiles = [
-    ['Dives logged', n],
-    ['Time underwater', `${Math.floor(totalSeconds / 3600)}<small> h</small> ${Math.floor((totalSeconds % 3600) / 60)}<small> m</small>`],
-    ['Deepest', `${num(deepest)}<small> m</small>`],
-    ['Average max depth', `${num(avgDepth)}<small> m</small>`],
-    ['Coldest', coldest === null ? '–' : `${num(coldest)}<small> °C</small>`],
-    ['Sites visited', sites],
-  ];
-  document.getElementById('stat-tiles').innerHTML = tiles
-    .map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`)
-    .join('');
-
-  const byYear = new Map();
-  for (const d of dives) {
-    const y = (d.date || '').slice(0, 4);
-    if (y) byYear.set(y, (byYear.get(y) || 0) + 1);
-  }
-  const years = [...byYear.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-  const peak = Math.max(1, ...byYear.values());
-
-  document.getElementById('per-year').innerHTML = years.length
-    ? `<table>${years.map(([y, c]) => `
-        <tr><td style="width:70px">${y}</td>
-        <td><div style="background:var(--accent);height:14px;border-radius:3px;
-             width:${(c / peak * 100).toFixed(1)}%;min-width:3px"></div></td>
-        <td style="width:60px;text-align:right">${c}</td></tr>`).join('')}</table>`
-    : '<div class="empty">No dives yet.</div>';
-}
-
-// ── Map ────────────────────────────────────────────────────────────────────
-
-let map = null;
-let catalogueLayer = null;   // every known site, from the bundled catalogue
-let divedLayer = null;       // the places you have actually logged dives
-let showCatalogue = true;
-let showServices = false;   // dive clubs and accommodation
-
-/**
- * The map shows two things at once:
- *
- *  - the whole bundled catalogue of known dive sites, so it is useful for
- *    finding somewhere to dive rather than only recording where you went
- *  - your own logged dives on top, picked out in the accent colour
- *
- * 3,267 catalogue markers is far too many to draw at once, so only those in
- * view are rendered, redrawn on pan and zoom and capped so a zoomed-out map
- * stays responsive. They are canvas circles rather than image pins for the
- * same reason.
- */
-async function renderMap() {
-  await loadCatalogue();
-
-  // Resolve each dive's position, falling back to the catalogue by name.
-  const placed = [];
-  let named = 0, unnamed = 0;
-  for (const d of dives) {
-    const c = coordsFor(d);
-    if (c) placed.push({ dive: d, ...c });
-    else if ((d.site_name || '').trim()) named++;
-    else unnamed++;
-  }
-
-  if (!map) {
-    map = L.map('map', { scrollWheelZoom: true, preferCanvas: true }).setView([25, 12], 2);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 18,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    }).addTo(map);
-    catalogueLayer = L.layerGroup().addTo(map);
-    divedLayer = L.layerGroup().addTo(map);
-    map.on('moveend', drawCatalogueMarkers);
-  }
-
-  // ── Your dives, one marker per site ──────────────────────────────────────
-  divedLayer.clearLayers();
-  const bySite = new Map();
-  for (const p of placed) {
-    const key = `${p.dive.site_name || ''}@${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
-    if (!bySite.has(key)) {
-      bySite.set(key, { name: p.dive.site_name, lat: p.lat, lon: p.lon, dives: [] });
-    }
-    bySite.get(key).dives.push(p.dive);
-  }
-
-  const points = [];
-  for (const site of bySite.values()) {
-    const deepest = Math.max(...site.dives.map((d) => Number(d.maxdepth) || 0));
-    L.circleMarker([site.lat, site.lon], {
-      radius: 8, color: '#0a1420', weight: 2,
-      fillColor: '#4fc3f7', fillOpacity: 1,
-    }).addTo(divedLayer).bindPopup(
-      `<strong>${esc(site.name || 'Unnamed site')}</strong><br>` +
-      `${site.dives.length} dive${site.dives.length === 1 ? '' : 's'} logged<br>` +
-      `deepest ${deepest.toFixed(1)} m` +
-      (site.name ? `<br>${sitePopupLink(site.name, 'Stats & temperature profile →')}` : ''));
-    points.push([site.lat, site.lon]);
-  }
-
-  // Open on your own dives when there are any; otherwise show the world.
-  if (points.length && !map._deeplogFitted) {
-    map.fitBounds(points, { padding: [40, 40], maxZoom: 9 });
-    map._deeplogFitted = true;
-  }
-
-  drawCatalogueMarkers();
-  updateMapNote(bySite.size, placed.length, named, unnamed);
-
-  // Leaflet mis-measures a container that was hidden when it was created.
-  setTimeout(() => map.invalidateSize(), 60);
-}
-
-/** Redraws the catalogue circles for whatever is currently in view. */
-function drawCatalogueMarkers() {
-  if (!map || !catalogueLayer) return;
-  catalogueLayer.clearLayers();
-  if (!showCatalogue) { updateCatalogueCount(0, 0); return; }
-
-  // Canvas circles are cheap, so the whole catalogue can be drawn at world
-  // zoom; the cap is a guard against the file growing, not a limit we hit.
-  const CAP = 4000;
-  const b = map.getBounds();
-  let inView = 0, drawn = 0;
-
-  // Dive clubs and accommodation come from the My Maps source too; they are
-  // context rather than places to dive, so they are drawn only on request.
-  const STYLE = {
-    site:    { radius: 4,   color: '#7fd4a8', fillColor: '#4a9d78' },
-    club:    { radius: 3.5, color: '#9fb6cc', fillColor: '#5b7794' },
-    lodging: { radius: 3.5, color: '#e0c07a', fillColor: '#a8863c' },
-  };
-
-  const tally = { site: 0, club: 0, lodging: 0 };
-
-  for (const site of catalogueSites) {
-    const kind = site.kind || 'site';
-    if (kind !== 'site' && !showServices) continue;
-    if (!b.contains([site.lat, site.lon])) continue;
-    inView++;
-    if (drawn >= CAP) continue;
-    drawn++;
-    tally[kind] = (tally[kind] || 0) + 1;
-
-    const st = STYLE[kind] || STYLE.site;
-    const where = [site.country, site.region, site.desc].filter(Boolean).join(' · ');
-    L.circleMarker([site.lat, site.lon], {
-      radius: st.radius, color: st.color, weight: 1,
-      fillColor: st.fillColor, fillOpacity: 0.8,
-    }).addTo(catalogueLayer).bindPopup(
-      `<strong>${esc(site.name)}</strong><br>` +
-      `${esc(where) || '&nbsp;'}` +
-      (site.notes ? `<br><span style="display:block;max-width:260px;margin-top:4px">${esc(site.notes)}</span>` : '') +
-      (site.source ? `<br><a href="${esc(site.source)}" target="_blank" rel="noopener">source</a>` : '') +
-      `<br><span style="color:#8fb0c8">${site.lat.toFixed(4)}, ${site.lon.toFixed(4)}</span>` +
-      `<br>${sitePopupLink(site.name, 'Stats & temperature profile →')}`);
-  }
-  updateCatalogueCount(drawn, inView, tally);
-}
-
-/**
- * A link inside a Leaflet popup that opens the site view. Popups are inserted
- * into the DOM by Leaflet after this HTML is built, so the click is caught by
- * delegation on the document rather than a listener bound here.
- */
-function sitePopupLink(name, label) {
-  return `<a href="#" class="site-link" data-site-name="${esc(name)}">${esc(label)}</a>`;
-}
-
-function updateCatalogueCount(drawn, inView, tally = {}) {
-  const el = document.getElementById('cat-count');
-  if (!el) return;
-  if (!showCatalogue) { el.textContent = 'hidden'; return; }
-
-  // Spell out the split, so a viewport full of clubs is never mistaken for
-  // the catalogue having nothing but clubs in it.
-  const bits = [];
-  if (tally.site) bits.push(`${tally.site} dive site${tally.site === 1 ? '' : 's'}`);
-  if (tally.club) bits.push(`${tally.club} club${tally.club === 1 ? '' : 's'}`);
-  if (tally.lodging) bits.push(`${tally.lodging} stay${tally.lodging === 1 ? '' : 's'}`);
-
-  el.textContent = (bits.length ? bits.join(', ') : 'nothing') + ' in view'
-    + (inView > drawn ? ` (of ${inView} — zoom in for the rest)` : '');
-}
-
-function updateMapNote(siteCount, placedCount, named, unnamed) {
-  const parts = [];
-  const nSites = catalogueSites.filter((s) => (s.kind || 'site') === 'site').length;
-  const nFin = catalogueSites.filter((s) => s.src === 'mymaps').length;
-  parts.push(`Catalogue: ${nSites} known dive sites — green. ` +
-             `${nFin} Finnish entries from the DeepLog Google My Maps map, ` +
-             `the rest from OpenStreetMap (ODbL).`);
-  if (siteCount) {
-    parts.push(`Your dives: ${siteCount} site(s), ${placedCount} dive(s) — blue.`);
-  } else {
-    parts.push('None of your own dives are on the map yet.');
-  }
-  if (named) {
-    parts.push(`${named} dive(s) have a site name that is not in the catalogue ` +
-               `and no saved coordinates.`);
-  }
-  if (unnamed) {
-    parts.push(`${unnamed} dive(s) have no site — use “Set sites…” on the Dive log ` +
-               `to place them.`);
-  }
-  document.getElementById('map-note').textContent = parts.join(' ');
-}
-
-// ── Navigation ─────────────────────────────────────────────────────────────
-
-function switchTab(name) {
-  for (const id of ['dives', 'detail', 'sites', 'site', 'stats', 'map']) {
-    document.getElementById('tab-' + id).classList.toggle('hidden', id !== name);
-  }
-  // A detail view keeps its parent tab highlighted.
-  const top = name === 'detail' ? 'dives' : name === 'site' ? 'sites' : name;
-  document.querySelectorAll('nav button').forEach((b) =>
-    b.classList.toggle('active', b.dataset.tab === top));
-
-  if (name === 'stats') renderStats();
-  if (name === 'sites') renderSites();
-  if (name === 'map') renderMap();
-}
-
-// ── Boot ───────────────────────────────────────────────────────────────────
-
-function showLogin(message, kind) {
-  document.getElementById('login-view').classList.remove('hidden');
-  document.getElementById('app-view').classList.add('hidden');
-  const el = document.getElementById('login-msg');
-  el.textContent = message || '';
-  el.className = 'msg' + (kind ? ' ' + kind : '');
-}
-
-function signOut() {
-  saveSession(null);
-  dives = [];
-  showLogin('');
-}
-
-async function enterApp() {
-  document.getElementById('login-view').classList.add('hidden');
-  document.getElementById('app-view').classList.remove('hidden');
-  document.getElementById('who').textContent = session.email || '';
-  await reload();
-}
-
-async function reload() {
-  const list = document.getElementById('dive-list');
-  list.innerHTML = '<div class="empty">Loading your dives…</div>';
-  try {
-    dives = await fetchDives();
-    renderList();
-  } catch (e) {
-    list.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
-  }
-}
-
-async function handleSignIn() {
-  const email = document.getElementById('email').value.trim();
-  const password = document.getElementById('password').value;
-  if (!email || !password) return showLogin('Enter your email and password.', 'err');
-
-  showLogin('Signing in…');
-  try {
-    await signIn(email, password);
-    await enterApp();
-  } catch (e) {
-    showLogin(e.message, 'err');
-  }
-}
-
-async function handleSignUp() {
-  const email = document.getElementById('email').value.trim();
-  const password = document.getElementById('password').value;
-  if (!email || !password) return showLogin('Enter an email and a password.', 'err');
-
-  showLogin('Creating your account…');
-  try {
-    if (await signUp(email, password)) await enterApp();
-    else showLogin('Account created. Check your email to confirm, then sign in.', 'ok');
-  } catch (e) {
-    showLogin(e.message, 'err');
-  }
-}
-
-document.getElementById('btn-signin').addEventListener('click', handleSignIn);
-document.getElementById('btn-signup').addEventListener('click', handleSignUp);
-document.getElementById('btn-signout').addEventListener('click', signOut);
-document.getElementById('btn-refresh').addEventListener('click', reload);
-document.getElementById('btn-select').addEventListener('click', () => {
-  selecting = !selecting;
-  selected.clear();
-  renderList();
-});
-document.getElementById('btn-back').addEventListener('click', () => switchTab('dives'));
-document.getElementById('btn-site-back').addEventListener('click', () => switchTab('sites'));
-
-// ── Map controls ───────────────────────────────────────────────────────────
-
-document.getElementById('cat-toggle').addEventListener('change', (e) => {
-  showCatalogue = e.target.checked;
-  drawCatalogueMarkers();
-});
-
-// Popup links are created by Leaflet long after load, so delegate.
-document.addEventListener('click', (e) => {
-  const link = e.target.closest && e.target.closest('.site-link');
-  if (!link) return;
-  e.preventDefault();
-  openSiteByName(link.dataset.siteName);
-});
-
-document.getElementById('svc-toggle').addEventListener('change', (e) => {
-  showServices = e.target.checked;
-  drawCatalogueMarkers();
-});
-
-document.getElementById('btn-fit-mine').addEventListener('click', () => {
-  if (!map) return;
-  const pts = dives.map(coordsFor).filter(Boolean).map((c) => [c.lat, c.lon]);
-  if (pts.length) map.fitBounds(pts, { padding: [40, 40], maxZoom: 11 });
-  else document.getElementById('map-note').textContent =
-    'None of your dives have a position yet — use “Set sites…” on the Dive log.';
-});
-
-// Jump the map to a catalogue site, or to everything in a country.
-document.getElementById('map-search').addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter' || !map) return;
-  const q = foldName(e.target.value);
-  if (!q) return;
-
-  const byName = catalogueSites.filter((s) => foldName(s.name).includes(q));
-  const byPlace = catalogueSites.filter((s) =>
-    foldName(s.country || '').includes(q) || foldName(s.region || '').includes(q));
-  const hits = byName.length ? byName : byPlace;
-
-  if (!hits.length) {
-    document.getElementById('map-note').textContent = `Nothing in the catalogue matches “${e.target.value}”.`;
-    return;
-  }
-  if (hits.length === 1) map.setView([hits[0].lat, hits[0].lon], 13);
-  else map.fitBounds(hits.map((h) => [h.lat, h.lon]), { padding: [40, 40] });
-  drawCatalogueMarkers();
-});
-document.getElementById('search').addEventListener('input', renderList);
-document.getElementById('password').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') handleSignIn();
-});
-document.querySelectorAll('nav button').forEach((b) =>
-  b.addEventListener('click', () => switchTab(b.dataset.tab)));
-
-// A stored session is only a hint; the first request proves whether it works.
-(async () => {
-  session = loadSession();
-  if (session && session.access_token) {
-    try {
-      dives = await fetchDives();
-      await enterApp();
-      renderList();
-      return;
-    } catch {
-      saveSession(null);
-    }
-  }
-  showLogin('');
-})();
-
-})();
-</script>
+<script src="js/util.js"></script>
+<script src="js/api.js"></script>
+<script src="js/catalogue.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/views.js"></script>
+<script src="js/map.js"></script>
+<script src="js/logdive.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>

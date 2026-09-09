@@ -17,26 +17,38 @@ uploaded from the phone show up here straight away.
 
 ## What it does
 
-- Email/password sign-in and sign-up against Supabase Auth, with automatic
-  access-token refresh; the session is kept in `localStorage`
-- Dive list with search over site, date and dive computer
-- Per-dive detail: depth and temperature profile drawn as inline SVG, plus gas
-  mixes and cylinder pressures
-- Stats: dive count, time underwater, deepest, coldest, sites, dives per year
-- Sites: every site you have dived, with the number of recorded dives, and a
-  combined profile of all dives there — time across, depth down, each segment
-  coloured by the water temperature recorded at that point. Map markers link
-  straight to this view, including catalogue sites you have never dived, which
-  open with their description and an empty profile
-- Map of **~3,500 known dive sites** — 238 of them in Finland — with your own
-  logged dives picked out on top in blue. Only the sites in view are drawn,
-  redrawn as you pan; there is a search box to jump to a site or a country,
-  and toggles for the catalogue and for dive clubs and accommodation.
+- **Dives** — the home screen: total dives, time underwater, max depth and last
+  dive, then a card per dive leading with site, place and date, with depth,
+  duration, water temperature and gas, and a small profile sparkline
+- **Dive detail** — headline metrics, a full dive-computer style profile,
+  gas and cylinder tables, and edit / delete
+- **Log dive** — a sectioned form (dive, profile, conditions, gas), reachable
+  from the top bar, the mobile centre button, a site page or a map marker.
+  It remembers the values you repeat
+- **Sites** — every site you have dived plus the whole catalogue, searchable
+  and filtered by dived / not dived / type / nearby, with "Dived N times"
+- **Site detail** — dive count, deepest, total time, temperature range, and a
+  combined profile of all dives there coloured by water temperature
+- **Map** — the whole catalogue with your own dives picked out, floating
+  search, layer chips and a bottom sheet per site
+- **Statistics** — summary plus Overview / Depth / Temperature / Gas /
+  Locations tabs
 
-  Where the two sources describe the same place the curated My Maps entry
-  wins. Position alone cannot decide that — the sources pin Ojamon 200 m
-  apart, while distinct reef sites can be closer — so a duplicate needs both
-  proximity and a shared word in the name.
+## Layout
+
+    index.html      markup shell and the icon sprite
+    css/app.css     the design system: tokens, type scale, components
+    js/util.js      formatting, escaping, icons
+    js/api.js       Supabase auth, session, dive create/read/update/delete
+    js/catalogue.js the bundled site catalogues and site matching
+    js/charts.js    profiles, trends and bars, all inline SVG
+    js/ui.js        reusable components: metric, cards, sheet, site picker
+    js/views.js     the screens
+    js/map.js       the map
+    js/logdive.js   the log-dive form
+    js/app.js       boot, sign-in, navigation
+
+No framework and no build step: plain scripts in load order.
 
 ### Setting dive sites
 
