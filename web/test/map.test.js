@@ -9,41 +9,75 @@ const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8')
   .replace(/<link rel="stylesheet" href="https:\/\/unpkg[^>]*>/g, '');
 
 const CATALOGUE = { sites: [
-  { name: 'Ojamon kaivoslampi', lat: 60.239814, lon: 24.034529, country: 'Finland' },
-  { name: 'Vetokannas',         lat: 59.989997, lon: 24.417312, country: 'Finland' },
+  { name: 'Ojamon kaivoslampi', lat: 60.239814, lon: 24.034529, country: 'Finland', desc: 'Dive site' },
+  { name: 'Vetokannas',         lat: 59.989997, lon: 24.417312, country: 'Finland', desc: 'Dive site' },
+  { name: 'Kuru',               lat: 62.120610, lon: 23.917669, country: 'Finland', desc: 'Wreck' },
+  { name: 'Blue Hole',          lat: 27.849700, lon: 34.533900, country: 'Egypt',   desc: 'Dive site' },
 ] };
 
 function makeLeaflet(record) {
-  const layer = () => ({
-    addTo() { return this; }, clearLayers() { record.cleared++; }, _l: true,
-  });
+  const layer = () => {
+    const l = {
+      addTo() { return l; },
+      clearLayers() { record.cleared++; },
+    };
+    return l;
+  };
+  const marked = (store) => (latlng, opts) => {
+    store.push({ latlng, opts });
+    return {
+      addTo() { return this; },
+      bindPopup(html) { record.popups.push(html); return this; },
+    };
+  };
+
   const L = {
-    map: () => ({
-      setView() { return this; },
-      fitBounds(pts) { record.fitBounds = pts; },
-      invalidateSize() { record.invalidated++; },
-    }),
     tileLayer: () => ({ addTo() { return this; } }),
-    layerGroup: layer,
-    marker(latlng) {
-      record.markers.push(latlng);
-      return { addTo() { return this; }, bindPopup(html) { record.popups.push(html); return this; } };
+    layerGroup: () => {
+      // Two layers are created; tell them apart by creation order.
+      record.layers++;
+      const isCatalogue = record.layers === 1;
+      const l = {
+        addTo() { return l; },
+        clearLayers() { (isCatalogue ? record.catalogue : record.mine).length = 0; },
+        _catalogue: isCatalogue,
+      };
+      return l;
     },
   };
-  // map() returns an object literal whose methods use `this`; bind it properly.
+
   L.map = () => {
     const m = {
-      setView() { return m; },
+      _bounds: { south: -90, west: -180, north: 90, east: 180 },
+      setView(c, z) { record.setView = { c, z }; return m; },
       fitBounds(pts) { record.fitBounds = pts; return m; },
       invalidateSize() { record.invalidated++; return m; },
+      getBounds() {
+        const b = m._bounds;
+        return { contains: ([lat, lon]) =>
+          lat >= b.south && lat <= b.north && lon >= b.west && lon <= b.east };
+      },
+      on(ev, fn) { record.handlers[ev] = fn; return m; },
     };
+    record.map = m;
     return m;
   };
+
+  // circleMarker is routed to whichever layer it is added to.
+  L.circleMarker = (latlng, opts) => ({
+    addTo(layer) {
+      (layer && layer._catalogue ? record.catalogue : record.mine).push({ latlng, opts });
+      return this;
+    },
+    bindPopup(html) { record.popups.push(html); return this; },
+  });
+  L.marker = marked(record.mine);
   return L;
 }
 
 async function run(dives, { withLeaflet = true } = {}) {
-  const record = { markers: [], popups: [], cleared: 0, invalidated: 0, fitBounds: null };
+  const record = { catalogue: [], mine: [], popups: [], layers: 0, cleared: 0,
+                   invalidated: 0, fitBounds: null, setView: null, handlers: {}, map: null };
   const errors = [];
   const vc = new VirtualConsole();
   vc.on('jsdomError', (e) => errors.push(e.message));
@@ -87,9 +121,9 @@ async function run(dives, { withLeaflet = true } = {}) {
   await tick();
 
   return {
-    record, errors,
+    record, errors, window, tick,
     note: window.document.getElementById('map-note').textContent,
-    mapHidden: window.document.getElementById('tab-map').classList.contains('hidden'),
+    catCount: window.document.getElementById('cat-count').textContent,
   };
 }
 
@@ -107,50 +141,110 @@ const dive = (o) => Object.assign({
     console.log(`${c ? 'ok  ' : 'FAIL'}  ${n}${c ? '' : '   << ' + extra}`);
   };
 
-  // 1. A dive carrying its own coordinates.
-  let r = await run([dive({ site_name: 'Boat wreck', site_lat: 60.1, site_lon: 24.9 })]);
+  // ── The catalogue is the point of the map ────────────────────────────────
+  let r = await run([]);
   ok('no runtime errors drawing the map', r.errors.length === 0, r.errors.join(' | '));
-  ok('marker placed from the row coordinates', r.record.markers.length === 1,
-     JSON.stringify(r.record.markers));
-  ok('popup names the site', (r.record.popups[0] || '').includes('Boat wreck'), r.record.popups[0]);
-  ok('map fitted to the markers', Array.isArray(r.record.fitBounds));
+  ok('catalogue sites drawn with no dives logged at all',
+     r.record.catalogue.length === CATALOGUE.sites.length,
+     'drew ' + r.record.catalogue.length);
+  ok('Finnish sites are on the map',
+     r.record.popups.some((p) => p.includes('Ojamon kaivoslampi')) &&
+     r.record.popups.some((p) => p.includes('Vetokannas')),
+     r.record.popups.join(' | ').slice(0, 160));
+  ok('a global site is on the map too',
+     r.record.popups.some((p) => p.includes('Blue Hole')), 'no non-Finnish site drawn');
+  ok('popup carries country and kind',
+     r.record.popups.some((p) => p.includes('Finland') && p.includes('Wreck')),
+     r.record.popups.find((p) => p.includes('Kuru')) || 'none');
+  ok('note counts the catalogue', /4 known dive sites/.test(r.note), r.note);
+  ok('note credits OpenStreetMap', /OpenStreetMap/.test(r.note) && /ODbL/.test(r.note), r.note);
+  ok('note says no dives of your own are placed',
+     /None of your own dives/.test(r.note), r.note);
+  ok('catalogue count reported', /in view/.test(r.catCount), r.catCount);
   ok('invalidateSize called for the hidden container', r.record.invalidated > 0);
-  ok('note reports what was shown', /1 site/.test(r.note), r.note);
 
-  // 2. The case that left the real map empty: a name, no coordinates, but the
-  //    catalogue knows the site.
+  // ── Your own dives sit on top, styled differently ────────────────────────
   r = await run([dive({ site_name: 'Vetokannas' })]);
-  ok('catalogue supplies the missing position', r.record.markers.length === 1,
-     JSON.stringify(r.record.markers) + ' note=' + r.note);
-  ok('placed at the catalogue coordinates',
-     r.record.markers[0] && Math.abs(r.record.markers[0][0] - 59.989997) < 1e-6,
-     JSON.stringify(r.record.markers));
+  ok('catalogue still drawn alongside your dives', r.record.catalogue.length === 4,
+     String(r.record.catalogue.length));
+  ok('your dive drawn as its own marker', r.record.mine.length === 1,
+     JSON.stringify(r.record.mine.map((m) => m.latlng)));
+  ok('your dives use the accent colour',
+     r.record.mine[0].opts.fillColor === '#4fc3f7', JSON.stringify(r.record.mine[0].opts));
+  ok('catalogue sites are visually distinct',
+     r.record.catalogue[0].opts.fillColor !== r.record.mine[0].opts.fillColor);
+  ok('your dive placed from the catalogue by name',
+     Math.abs(r.record.mine[0].latlng[0] - 59.989997) < 1e-6,
+     JSON.stringify(r.record.mine[0].latlng));
+  ok('note reports your own sites', /Your dives: 1 site/.test(r.note), r.note);
+  ok('map opens on your dives', Array.isArray(r.record.fitBounds));
 
-  // 3. Case-and-accent-insensitive name matching.
-  r = await run([dive({ site_name: '  ojamon KAIVOSLAMPI ' })]);
-  ok('name match ignores case and padding', r.record.markers.length === 1,
-     JSON.stringify(r.record.markers) + ' note=' + r.note);
-
-  // 4. Names nowhere to be found, and dives with no site: explained, not blank.
-  r = await run([dive({ site_name: 'Some private quarry' }), dive({})]);
-  ok('unplaceable dives draw no markers', r.record.markers.length === 0);
-  ok('note explains the unmatched name', /not in the catalogue/.test(r.note), r.note);
-  ok('note counts dives with no site', /1 dive\(s\) have no site at all/.test(r.note), r.note);
-
-  // 5. Several dives at one site collapse to a single marker.
+  // ── Several dives at one site collapse to one marker ─────────────────────
   r = await run([
     dive({ site_name: 'Vetokannas', date: '2025-05-01' }),
     dive({ site_name: 'Vetokannas', date: '2025-06-01', maxdepth: 30 }),
   ]);
-  ok('one marker per site, not per dive', r.record.markers.length === 1,
-     JSON.stringify(r.record.markers));
-  ok('popup counts the dives', (r.record.popups[0] || '').includes('2 dives'), r.record.popups[0]);
-  ok('popup reports the deepest', (r.record.popups[0] || '').includes('30.0 m'), r.record.popups[0]);
+  ok('one marker per site, not per dive', r.record.mine.length === 1,
+     String(r.record.mine.length));
+  ok('popup counts the dives',
+     r.record.popups.some((p) => p.includes('2 dives logged')),
+     r.record.popups.filter((p) => p.includes('logged')).join(' | '));
+  ok('popup reports the deepest',
+     r.record.popups.some((p) => p.includes('30.0 m')), 'no depth in popup');
 
-  // 6. No dives at all.
+  // ── Dives that cannot be placed are explained ────────────────────────────
+  r = await run([dive({ site_name: 'Some private quarry' }), dive({})]);
+  ok('unplaceable dives draw no personal markers', r.record.mine.length === 0);
+  ok('note explains the unmatched name', /not in the catalogue/.test(r.note), r.note);
+  ok('note points at Set sites for dives with none',
+     /have no site/.test(r.note) && /Set sites/.test(r.note), r.note);
+  ok('catalogue still shown regardless', r.record.catalogue.length === 4);
+
+  // ── Only what is in view is drawn, and panning redraws ───────────────────
   r = await run([]);
-  ok('empty log says so', /No dives yet/.test(r.note), r.note);
-  ok('no errors with an empty log', r.errors.length === 0, r.errors.join(' | '));
+  r.record.map._bounds = { south: 59, west: 23, north: 61, east: 25 };  // southern Finland
+  r.record.handlers.moveend();
+  ok('pan redraws for the new viewport', r.record.catalogue.length === 2,
+     'drew ' + r.record.catalogue.length + ' expected the 2 southern Finnish sites');
+  ok('out-of-view sites are dropped',
+     !r.record.catalogue.some((m) => m.latlng[0] > 61), 'Kuru should be out of view');
+
+  // ── The toggle hides the catalogue ───────────────────────────────────────
+  r = await run([]);
+  const toggle = r.window.document.getElementById('cat-toggle');
+  toggle.checked = false;
+  toggle.dispatchEvent(new r.window.Event('change'));
+  await r.tick(1);
+  ok('toggle hides the catalogue', r.record.catalogue.length === 0,
+     String(r.record.catalogue.length));
+  ok('toggle state reported',
+     r.window.document.getElementById('cat-count').textContent === 'hidden',
+     r.window.document.getElementById('cat-count').textContent);
+
+  // ── Search jumps to a site ───────────────────────────────────────────────
+  r = await run([]);
+  const search = r.window.document.getElementById('map-search');
+  search.value = 'kuru';
+  search.dispatchEvent(new r.window.KeyboardEvent('keydown', { key: 'Enter' }));
+  await r.tick(1);
+  ok('search jumps to a single hit',
+     r.record.setView && Math.abs(r.record.setView.c[0] - 62.120610) < 1e-5,
+     JSON.stringify(r.record.setView));
+
+  search.value = 'finland';
+  search.dispatchEvent(new r.window.KeyboardEvent('keydown', { key: 'Enter' }));
+  await r.tick(1);
+  ok('searching a country fits all its sites',
+     Array.isArray(r.record.fitBounds) && r.record.fitBounds.length === 3,
+     JSON.stringify(r.record.fitBounds));
+
+  search.value = 'nowhere at all';
+  search.dispatchEvent(new r.window.KeyboardEvent('keydown', { key: 'Enter' }));
+  await r.tick(1);
+  ok('a search with no hits says so',
+     /Nothing in the catalogue matches/.test(
+       r.window.document.getElementById('map-note').textContent),
+     r.window.document.getElementById('map-note').textContent);
 
   console.log(`\n${failed ? failed + ' failed' : 'all passed'}`);
   process.exit(failed ? 1 : 0);

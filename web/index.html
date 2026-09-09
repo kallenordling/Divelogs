@@ -137,7 +137,19 @@
   h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em;
        color: var(--muted); margin: 24px 0 8px; }
 
-  #map { height: 460px; border-radius: 12px; }
+  #map { height: 520px; border-radius: 12px; }
+  .maptools {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    background: var(--card); border-radius: 10px; padding: 10px 14px; margin-bottom: 10px;
+    font-size: 13px; color: var(--muted);
+  }
+  .maptools .grow { flex: 1; }
+  .maptools input[type="search"] { width: auto; min-width: 190px; flex: 0 1 260px; padding: 8px 11px; }
+  .maptools .chk { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text); }
+  .maptools .key { display: flex; align-items: center; gap: 6px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+  .dot.cat  { background: #4a9d78; border: 1px solid #7fd4a8; }
+  .dot.mine { background: #4fc3f7; border: 2px solid #0a1420; width: 13px; height: 13px; }
   .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card); color: var(--text); }
 
   .empty { color: var(--dim); text-align: center; padding: 48px 20px; }
@@ -253,6 +265,14 @@
 
     <!-- Map -->
     <section id="tab-map" class="hidden">
+      <div class="maptools">
+        <label class="chk"><input type="checkbox" id="cat-toggle" checked> Known dive sites</label>
+        <span class="key"><i class="dot cat"></i>catalogue <span id="cat-count"></span></span>
+        <span class="key"><i class="dot mine"></i>your dives</span>
+        <span class="grow"></span>
+        <input id="map-search" type="search" placeholder="Jump to a site or country…">
+        <button class="ghost" id="btn-fit-mine">My dives</button>
+      </div>
       <div id="map"></div>
       <div class="note" id="map-note"></div>
     </section>
@@ -415,6 +435,7 @@ function asArray(v) {
 // in by name, which is what puts dives on the map at all.
 
 let catalogue = null;          // Map of folded name -> { lat, lon }
+let catalogueSites = [];       // the full entries, for the map and the picker
 
 const foldName = (s) => String(s ?? '')
   .toLowerCase().normalize('NFD').replace(/\p{Mn}+/gu, '').trim();
@@ -425,7 +446,8 @@ async function loadCatalogue() {
   try {
     const res = await fetch('dive_sites.json');
     if (!res.ok) throw new Error(String(res.status));
-    for (const s of (await res.json()).sites || []) {
+    catalogueSites = (await res.json()).sites || [];
+    for (const s of catalogueSites) {
       const k = foldName(s.name);
       if (k && !catalogue.has(k)) catalogue.set(k, { lat: s.lat, lon: s.lon });
     }
@@ -1080,8 +1102,23 @@ function renderStats() {
 
 // ── Map ────────────────────────────────────────────────────────────────────
 
-let map = null, markerLayer = null;
+let map = null;
+let catalogueLayer = null;   // every known site, from the bundled catalogue
+let divedLayer = null;       // the places you have actually logged dives
+let showCatalogue = true;
 
+/**
+ * The map shows two things at once:
+ *
+ *  - the whole bundled catalogue of known dive sites, so it is useful for
+ *    finding somewhere to dive rather than only recording where you went
+ *  - your own logged dives on top, picked out in the accent colour
+ *
+ * 3,267 catalogue markers is far too many to draw at once, so only those in
+ * view are rendered, redrawn on pan and zoom and capped so a zoomed-out map
+ * stays responsive. They are canvas circles rather than image pins for the
+ * same reason.
+ */
 async function renderMap() {
   await loadCatalogue();
 
@@ -1096,16 +1133,18 @@ async function renderMap() {
   }
 
   if (!map) {
-    map = L.map('map', { scrollWheelZoom: true }).setView([30, 10], 2);
+    map = L.map('map', { scrollWheelZoom: true, preferCanvas: true }).setView([25, 12], 2);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(map);
-    markerLayer = L.layerGroup().addTo(map);
+    catalogueLayer = L.layerGroup().addTo(map);
+    divedLayer = L.layerGroup().addTo(map);
+    map.on('moveend', drawCatalogueMarkers);
   }
-  markerLayer.clearLayers();
 
-  // One marker per site, with a dive count rather than a pin per dive.
+  // ── Your dives, one marker per site ──────────────────────────────────────
+  divedLayer.clearLayers();
   const bySite = new Map();
   for (const p of placed) {
     const key = `${p.dive.site_name || ''}@${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
@@ -1116,31 +1155,86 @@ async function renderMap() {
   }
 
   const points = [];
-  for (const s of bySite.values()) {
-    const deepest = Math.max(...s.dives.map((d) => Number(d.maxdepth) || 0));
-    L.marker([s.lat, s.lon]).addTo(markerLayer).bindPopup(
-      `<strong>${esc(s.name || 'Unnamed site')}</strong><br>` +
-      `${s.dives.length} dive${s.dives.length === 1 ? '' : 's'}<br>` +
+  for (const site of bySite.values()) {
+    const deepest = Math.max(...site.dives.map((d) => Number(d.maxdepth) || 0));
+    L.circleMarker([site.lat, site.lon], {
+      radius: 8, color: '#0a1420', weight: 2,
+      fillColor: '#4fc3f7', fillOpacity: 1,
+    }).addTo(divedLayer).bindPopup(
+      `<strong>${esc(site.name || 'Unnamed site')}</strong><br>` +
+      `${site.dives.length} dive${site.dives.length === 1 ? '' : 's'} logged<br>` +
       `deepest ${deepest.toFixed(1)} m`);
-    points.push([s.lat, s.lon]);
+    points.push([site.lat, site.lon]);
   }
-  if (points.length) map.fitBounds(points, { padding: [40, 40], maxZoom: 11 });
 
-  // Say why the map is empty rather than showing a blank world.
-  const note = document.getElementById('map-note');
-  const parts = [];
-  if (bySite.size) parts.push(`${bySite.size} site(s), ${placed.length} dive(s) shown.`);
-  if (named) {
-    parts.push(`${named} dive(s) have a site name that is not in the catalogue and no ` +
-      `saved coordinates — assign the site in the phone app, or add it under Sites there, ` +
-      `and it will appear here.`);
+  // Open on your own dives when there are any; otherwise show the world.
+  if (points.length && !map._deeplogFitted) {
+    map.fitBounds(points, { padding: [40, 40], maxZoom: 9 });
+    map._deeplogFitted = true;
   }
-  if (unnamed) parts.push(`${unnamed} dive(s) have no site at all.`);
-  if (!bySite.size && !named && !unnamed) parts.push('No dives yet.');
-  note.textContent = parts.join(' ');
+
+  drawCatalogueMarkers();
+  updateMapNote(bySite.size, placed.length, named, unnamed);
 
   // Leaflet mis-measures a container that was hidden when it was created.
   setTimeout(() => map.invalidateSize(), 60);
+}
+
+/** Redraws the catalogue circles for whatever is currently in view. */
+function drawCatalogueMarkers() {
+  if (!map || !catalogueLayer) return;
+  catalogueLayer.clearLayers();
+  if (!showCatalogue) { updateCatalogueCount(0, 0); return; }
+
+  // Canvas circles are cheap, so the whole catalogue can be drawn at world
+  // zoom; the cap is a guard against the file growing, not a limit we hit.
+  const CAP = 4000;
+  const b = map.getBounds();
+  let inView = 0, drawn = 0;
+
+  for (const site of catalogueSites) {
+    if (!b.contains([site.lat, site.lon])) continue;
+    inView++;
+    if (drawn >= CAP) continue;
+    drawn++;
+
+    L.circleMarker([site.lat, site.lon], {
+      radius: 4, color: '#7fd4a8', weight: 1,
+      fillColor: '#4a9d78', fillOpacity: 0.75,
+    }).addTo(catalogueLayer).bindPopup(
+      `<strong>${esc(site.name)}</strong><br>` +
+      `${esc([site.country, site.region, site.desc].filter(Boolean).join(' · ')) || '&nbsp;'}<br>` +
+      `<span style="color:#8fb0c8">${site.lat.toFixed(4)}, ${site.lon.toFixed(4)}</span>`);
+  }
+  updateCatalogueCount(drawn, inView);
+}
+
+function updateCatalogueCount(drawn, inView) {
+  const el = document.getElementById('cat-count');
+  if (!el) return;
+  el.textContent = !showCatalogue ? 'hidden'
+    : inView > drawn ? `showing ${drawn} of ${inView} in view — zoom in for the rest`
+    : `${drawn} in view`;
+}
+
+function updateMapNote(siteCount, placedCount, named, unnamed) {
+  const parts = [];
+  parts.push(`Catalogue: ${catalogueSites.length} known dive sites ` +
+             `(OpenStreetMap, ODbL) — green.`);
+  if (siteCount) {
+    parts.push(`Your dives: ${siteCount} site(s), ${placedCount} dive(s) — blue.`);
+  } else {
+    parts.push('None of your own dives are on the map yet.');
+  }
+  if (named) {
+    parts.push(`${named} dive(s) have a site name that is not in the catalogue ` +
+               `and no saved coordinates.`);
+  }
+  if (unnamed) {
+    parts.push(`${unnamed} dive(s) have no site — use “Set sites…” on the Dive log ` +
+               `to place them.`);
+  }
+  document.getElementById('map-note').textContent = parts.join(' ');
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────
@@ -1232,6 +1326,41 @@ document.getElementById('btn-select').addEventListener('click', () => {
 });
 document.getElementById('btn-back').addEventListener('click', () => switchTab('dives'));
 document.getElementById('btn-site-back').addEventListener('click', () => switchTab('sites'));
+
+// ── Map controls ───────────────────────────────────────────────────────────
+
+document.getElementById('cat-toggle').addEventListener('change', (e) => {
+  showCatalogue = e.target.checked;
+  drawCatalogueMarkers();
+});
+
+document.getElementById('btn-fit-mine').addEventListener('click', () => {
+  if (!map) return;
+  const pts = dives.map(coordsFor).filter(Boolean).map((c) => [c.lat, c.lon]);
+  if (pts.length) map.fitBounds(pts, { padding: [40, 40], maxZoom: 11 });
+  else document.getElementById('map-note').textContent =
+    'None of your dives have a position yet — use “Set sites…” on the Dive log.';
+});
+
+// Jump the map to a catalogue site, or to everything in a country.
+document.getElementById('map-search').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || !map) return;
+  const q = foldName(e.target.value);
+  if (!q) return;
+
+  const byName = catalogueSites.filter((s) => foldName(s.name).includes(q));
+  const byPlace = catalogueSites.filter((s) =>
+    foldName(s.country || '').includes(q) || foldName(s.region || '').includes(q));
+  const hits = byName.length ? byName : byPlace;
+
+  if (!hits.length) {
+    document.getElementById('map-note').textContent = `Nothing in the catalogue matches “${e.target.value}”.`;
+    return;
+  }
+  if (hits.length === 1) map.setView([hits[0].lat, hits[0].lon], 13);
+  else map.fitBounds(hits.map((h) => [h.lat, h.lon]), { padding: [40, 40] });
+  drawCatalogueMarkers();
+});
 document.getElementById('search').addEventListener('input', renderList);
 document.getElementById('password').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') handleSignIn();

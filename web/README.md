@@ -21,7 +21,10 @@ uploaded from the phone show up here straight away.
 - Sites: every site you have dived, with the number of recorded dives, and a
   combined profile of all dives there — time across, depth down, each segment
   coloured by the water temperature recorded at that point
-- Map of your dive sites (Leaflet + OpenStreetMap tiles)
+- Map of **all 3,267 known dive sites** from the bundled catalogue — Finnish
+  and worldwide — with your own logged dives picked out on top in blue. Only
+  the sites in view are drawn, redrawn as you pan; there is a search box to
+  jump to a site or a country, and a toggle to hide the catalogue
 
 ### Setting dive sites
 
