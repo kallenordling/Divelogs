@@ -5,9 +5,14 @@ password as the phone app** — both talk to the same Supabase project, so dives
 uploaded from the phone show up here straight away.
 
 - `index.html` — the whole app: no build step, no dependencies to install
-- `dive_sites.json` — a copy of `app/src/main/assets/dive_sites.json`, used to
-  turn a dive's site *name* into coordinates. A unit test fails if the two
-  copies drift, so re-copy it whenever the app asset changes.
+- `dive_sites.json` — a copy of `app/src/main/assets/dive_sites.json`
+  (OpenStreetMap, ODbL). A unit test fails if the two copies drift, so re-copy
+  it whenever the app asset changes.
+- `finnish_sites.json` — 354 Finnish entries snapshotted from the DeepLog
+  [Google My Maps map](https://www.google.com/maps/d/viewer?mid=1GoyVpKrxdGMYhXkX5B6fr5ShrnphJhU).
+  OpenStreetMap has almost nothing over Finland — 13 sites nationwide — so
+  without this the Baltic wrecks, lakes and quarries are simply missing.
+  Regenerate with `python3 scripts/fetch_finnish_sites.py`.
 - `test/` — jsdom tests that drive the real UI against a stubbed backend
 
 ## What it does
@@ -21,10 +26,15 @@ uploaded from the phone show up here straight away.
 - Sites: every site you have dived, with the number of recorded dives, and a
   combined profile of all dives there — time across, depth down, each segment
   coloured by the water temperature recorded at that point
-- Map of **all 3,267 known dive sites** from the bundled catalogue — Finnish
-  and worldwide — with your own logged dives picked out on top in blue. Only
-  the sites in view are drawn, redrawn as you pan; there is a search box to
-  jump to a site or a country, and a toggle to hide the catalogue
+- Map of **~3,500 known dive sites** — 238 of them in Finland — with your own
+  logged dives picked out on top in blue. Only the sites in view are drawn,
+  redrawn as you pan; there is a search box to jump to a site or a country,
+  and toggles for the catalogue and for dive clubs and accommodation.
+
+  Where the two sources describe the same place the curated My Maps entry
+  wins. Position alone cannot decide that — the sources pin Ojamon 200 m
+  apart, while distinct reef sites can be closer — so a duplicate needs both
+  proximity and a shared word in the name.
 
 ### Setting dive sites
 

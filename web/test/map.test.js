@@ -15,6 +15,21 @@ const CATALOGUE = { sites: [
   { name: 'Blue Hole',          lat: 27.849700, lon: 34.533900, country: 'Egypt',   desc: 'Dive site' },
 ] };
 
+// The Google My Maps source: Finnish lakes, quarries and Baltic wrecks.
+// "Ojamon kaivos" is the same place as OSM's "Ojamon kaivoslampi" under a
+// different name, so it must not appear twice.
+const FINNISH = { sites: [
+  { name: 'Kronprins Gustav Adolf', lat: 60.054217, lon: 24.932098, country: 'Finland',
+    desc: 'Boat site', kind: 'site', notes: 'Swedish ship of the line, sank 1788.',
+    source: 'https://example.invalid/kga' },
+  { name: 'Ojamon kaivos', lat: 60.240429, lon: 24.031069, country: 'Finland',
+    desc: 'Mine', kind: 'site' },
+  { name: 'Kaatialan avolouhos', lat: 62.679669, lon: 23.486688, country: 'Finland',
+    desc: 'Quarry', kind: 'site' },
+  { name: 'Kemin Urheilusukeltajat ry', lat: 65.735823, lon: 24.565717, country: 'Finland',
+    desc: 'Dive club', kind: 'club' },
+] };
+
 function makeLeaflet(record) {
   const layer = () => {
     const l = {
@@ -97,6 +112,9 @@ async function run(dives, { withLeaflet = true } = {}) {
             access_token: 'AT1', refresh_token: 'RT1',
             user: { email: 'd@e.com', id: 'u1' } }) };
         }
+        if (u.includes('finnish_sites.json')) {
+          return { ok: true, status: 200, json: async () => FINNISH };
+        }
         if (u.includes('dive_sites.json')) {
           return { ok: true, status: 200, json: async () => CATALOGUE };
         }
@@ -145,10 +163,11 @@ const dive = (o) => Object.assign({
   let r = await run([]);
   ok('no runtime errors drawing the map', r.errors.length === 0, r.errors.join(' | '));
   ok('catalogue sites drawn with no dives logged at all',
-     r.record.catalogue.length === CATALOGUE.sites.length,
-     'drew ' + r.record.catalogue.length);
+     r.record.catalogue.length === 6, 'drew ' + r.record.catalogue.length);
+  // Ojamon appears under its curated My Maps name, the OSM duplicate having
+  // been dropped; Vetokannas exists only in OSM and survives untouched.
   ok('Finnish sites are on the map',
-     r.record.popups.some((p) => p.includes('Ojamon kaivoslampi')) &&
+     r.record.popups.some((p) => p.includes('Ojamon kaivos')) &&
      r.record.popups.some((p) => p.includes('Vetokannas')),
      r.record.popups.join(' | ').slice(0, 160));
   ok('a global site is on the map too',
@@ -156,16 +175,52 @@ const dive = (o) => Object.assign({
   ok('popup carries country and kind',
      r.record.popups.some((p) => p.includes('Finland') && p.includes('Wreck')),
      r.record.popups.find((p) => p.includes('Kuru')) || 'none');
-  ok('note counts the catalogue', /4 known dive sites/.test(r.note), r.note);
+  ok('note counts the catalogue', /6 known dive sites/.test(r.note), r.note);
   ok('note credits OpenStreetMap', /OpenStreetMap/.test(r.note) && /ODbL/.test(r.note), r.note);
   ok('note says no dives of your own are placed',
      /None of your own dives/.test(r.note), r.note);
   ok('catalogue count reported', /in view/.test(r.catCount), r.catCount);
   ok('invalidateSize called for the hidden container', r.record.invalidated > 0);
 
+  // ── The Google My Maps source is what covers Finland ─────────────────────
+  ok('Baltic wreck from the My Maps source is on the map',
+     r.record.popups.some((p) => p.includes('Kronprins Gustav Adolf')),
+     'wreck missing');
+  ok('Finnish quarry is on the map',
+     r.record.popups.some((p) => p.includes('Kaatialan avolouhos')), 'quarry missing');
+  ok('My Maps description carried into the popup',
+     r.record.popups.some((p) => p.includes('sank 1788')), 'no description in popup');
+  ok('My Maps source link carried into the popup',
+     r.record.popups.some((p) => p.includes('example.invalid/kga')), 'no source link');
+  ok('note credits the My Maps source',
+     /Google My Maps/.test(r.note) && /4 Finnish entries/.test(r.note), r.note);
+  ok('note still credits OpenStreetMap', /OpenStreetMap/.test(r.note) && /ODbL/.test(r.note), r.note);
+
+  // The same quarry under two names must appear once, keeping the curated one.
+  const ojamon = r.record.popups.filter((p) => /Ojamon/.test(p));
+  ok('duplicate site deduplicated across sources', ojamon.length === 1,
+     ojamon.join(' | ') || 'none');
+  ok('the curated name wins the duplicate',
+     ojamon[0] && ojamon[0].includes('Ojamon kaivos<') , ojamon[0] || 'none');
+
+  // Clubs are context, not dive sites, so they stay hidden until asked for.
+  ok('dive clubs hidden by default',
+     !r.record.popups.some((p) => p.includes('Urheilusukeltajat')), 'club drawn unasked');
+
+  r = await run([]);
+  const svc = r.window.document.getElementById('svc-toggle');
+  svc.checked = true;
+  svc.dispatchEvent(new r.window.Event('change'));
+  await r.tick(1);
+  ok('clubs appear when asked for',
+     r.record.popups.some((p) => p.includes('Urheilusukeltajat')), 'club still hidden');
+  ok('clubs styled apart from dive sites',
+     r.record.catalogue.some((m) => m.opts.fillColor === '#5b7794'),
+     JSON.stringify(r.record.catalogue.map((m) => m.opts.fillColor)));
+
   // ── Your own dives sit on top, styled differently ────────────────────────
   r = await run([dive({ site_name: 'Vetokannas' })]);
-  ok('catalogue still drawn alongside your dives', r.record.catalogue.length === 4,
+  ok('catalogue still drawn alongside your dives', r.record.catalogue.length === 6,
      String(r.record.catalogue.length));
   ok('your dive drawn as its own marker', r.record.mine.length === 1,
      JSON.stringify(r.record.mine.map((m) => m.latlng)));
@@ -198,14 +253,14 @@ const dive = (o) => Object.assign({
   ok('note explains the unmatched name', /not in the catalogue/.test(r.note), r.note);
   ok('note points at Set sites for dives with none',
      /have no site/.test(r.note) && /Set sites/.test(r.note), r.note);
-  ok('catalogue still shown regardless', r.record.catalogue.length === 4);
+  ok('catalogue still shown regardless', r.record.catalogue.length === 6);
 
   // ── Only what is in view is drawn, and panning redraws ───────────────────
   r = await run([]);
   r.record.map._bounds = { south: 59, west: 23, north: 61, east: 25 };  // southern Finland
   r.record.handlers.moveend();
-  ok('pan redraws for the new viewport', r.record.catalogue.length === 2,
-     'drew ' + r.record.catalogue.length + ' expected the 2 southern Finnish sites');
+  ok('pan redraws for the new viewport', r.record.catalogue.length === 3,
+     'drew ' + r.record.catalogue.length + ' expected the southern Finnish sites');
   ok('out-of-view sites are dropped',
      !r.record.catalogue.some((m) => m.latlng[0] > 61), 'Kuru should be out of view');
 
@@ -235,7 +290,7 @@ const dive = (o) => Object.assign({
   search.dispatchEvent(new r.window.KeyboardEvent('keydown', { key: 'Enter' }));
   await r.tick(1);
   ok('searching a country fits all its sites',
-     Array.isArray(r.record.fitBounds) && r.record.fitBounds.length === 3,
+     Array.isArray(r.record.fitBounds) && r.record.fitBounds.length === 6,
      JSON.stringify(r.record.fitBounds));
 
   search.value = 'nowhere at all';

@@ -266,8 +266,9 @@
     <!-- Map -->
     <section id="tab-map" class="hidden">
       <div class="maptools">
-        <label class="chk"><input type="checkbox" id="cat-toggle" checked> Known dive sites</label>
-        <span class="key"><i class="dot cat"></i>catalogue <span id="cat-count"></span></span>
+        <label class="chk"><input type="checkbox" id="cat-toggle" checked> Dive sites</label>
+        <label class="chk"><input type="checkbox" id="svc-toggle"> Clubs &amp; stays</label>
+        <span class="key"><i class="dot cat"></i>sites <span id="cat-count"></span></span>
         <span class="key"><i class="dot mine"></i>your dives</span>
         <span class="grow"></span>
         <input id="map-search" type="search" placeholder="Jump to a site or country…">
@@ -440,19 +441,61 @@ let catalogueSites = [];       // the full entries, for the map and the picker
 const foldName = (s) => String(s ?? '')
   .toLowerCase().normalize('NFD').replace(/\p{Mn}+/gu, '').trim();
 
+/**
+ * Two catalogues are loaded and merged:
+ *
+ *  - dive_sites.json — OpenStreetMap, worldwide, but nearly empty over Finland
+ *  - finnish_sites.json — the DeepLog Google My Maps map, which is where the
+ *    Finnish lakes, quarries, mines and Baltic wrecks actually are
+ *
+ * Where both describe the same place the My Maps entry wins: it is the
+ * curated one, and it carries a description and a source link.
+ */
 async function loadCatalogue() {
   if (catalogue) return catalogue;
   catalogue = new Map();
-  try {
-    const res = await fetch('dive_sites.json');
-    if (!res.ok) throw new Error(String(res.status));
-    catalogueSites = (await res.json()).sites || [];
-    for (const s of catalogueSites) {
-      const k = foldName(s.name);
-      if (k && !catalogue.has(k)) catalogue.set(k, { lat: s.lat, lon: s.lon });
+
+  const grab = async (file, src) => {
+    try {
+      const res = await fetch(file);
+      if (!res.ok) throw new Error(String(res.status));
+      return ((await res.json()).sites || []).map((s) => ({ ...s, src }));
+    } catch {
+      return [];       // a missing catalogue must not break the page
     }
-  } catch {
-    // Not fatal: dives that carry their own coordinates still work.
+  };
+
+  const [osm, fin] = await Promise.all([
+    grab('dive_sites.json', 'osm'),
+    grab('finnish_sites.json', 'mymaps'),
+  ]);
+
+  // Drop OSM entries that duplicate a My Maps one. Position alone is not
+  // enough: the two sources pin Ojamon 200 m apart, while genuinely distinct
+  // sites on a reef can be closer than that. So require both a loose distance
+  // and a shared word in the name — "Ojamon kaivos" and "Ojamon kaivoslampi"
+  // share "ojamon", whereas two unrelated neighbours share nothing.
+  const metres = (a, b) => {
+    const dLat = (a.lat - b.lat) * 111320;
+    const dLon = (a.lon - b.lon) * 111320 * Math.cos(a.lat * Math.PI / 180);
+    return Math.hypot(dLat, dLon);
+  };
+  const words = (n) => new Set(
+    foldName(n).split(/[^a-z0-9]+/).filter((w) => w.length >= 4));
+  const sameName = (a, b) => {
+    const wa = words(a.name), wb = words(b.name);
+    for (const w of wa) if (wb.has(w)) return true;
+    return false;
+  };
+  const duplicate = (o, f) =>
+    metres(o, f) < 150 || (metres(o, f) < 500 && sameName(o, f));
+
+  const keptOsm = osm.filter((o) => !fin.some((f) => duplicate(o, f)));
+
+  catalogueSites = fin.concat(keptOsm);
+  for (const s of catalogueSites) {
+    const k = foldName(s.name);
+    if (k && !catalogue.has(k)) catalogue.set(k, { lat: s.lat, lon: s.lon });
   }
   return catalogue;
 }
@@ -1106,6 +1149,7 @@ let map = null;
 let catalogueLayer = null;   // every known site, from the bundled catalogue
 let divedLayer = null;       // the places you have actually logged dives
 let showCatalogue = true;
+let showServices = false;   // dive clubs and accommodation
 
 /**
  * The map shows two things at once:
@@ -1192,19 +1236,33 @@ function drawCatalogueMarkers() {
   const b = map.getBounds();
   let inView = 0, drawn = 0;
 
+  // Dive clubs and accommodation come from the My Maps source too; they are
+  // context rather than places to dive, so they are drawn only on request.
+  const STYLE = {
+    site:    { radius: 4,   color: '#7fd4a8', fillColor: '#4a9d78' },
+    club:    { radius: 3.5, color: '#9fb6cc', fillColor: '#5b7794' },
+    lodging: { radius: 3.5, color: '#e0c07a', fillColor: '#a8863c' },
+  };
+
   for (const site of catalogueSites) {
+    const kind = site.kind || 'site';
+    if (kind !== 'site' && !showServices) continue;
     if (!b.contains([site.lat, site.lon])) continue;
     inView++;
     if (drawn >= CAP) continue;
     drawn++;
 
+    const st = STYLE[kind] || STYLE.site;
+    const where = [site.country, site.region, site.desc].filter(Boolean).join(' · ');
     L.circleMarker([site.lat, site.lon], {
-      radius: 4, color: '#7fd4a8', weight: 1,
-      fillColor: '#4a9d78', fillOpacity: 0.75,
+      radius: st.radius, color: st.color, weight: 1,
+      fillColor: st.fillColor, fillOpacity: 0.8,
     }).addTo(catalogueLayer).bindPopup(
       `<strong>${esc(site.name)}</strong><br>` +
-      `${esc([site.country, site.region, site.desc].filter(Boolean).join(' · ')) || '&nbsp;'}<br>` +
-      `<span style="color:#8fb0c8">${site.lat.toFixed(4)}, ${site.lon.toFixed(4)}</span>`);
+      `${esc(where) || '&nbsp;'}` +
+      (site.notes ? `<br><span style="display:block;max-width:260px;margin-top:4px">${esc(site.notes)}</span>` : '') +
+      (site.source ? `<br><a href="${esc(site.source)}" target="_blank" rel="noopener">source</a>` : '') +
+      `<br><span style="color:#8fb0c8">${site.lat.toFixed(4)}, ${site.lon.toFixed(4)}</span>`);
   }
   updateCatalogueCount(drawn, inView);
 }
@@ -1219,8 +1277,11 @@ function updateCatalogueCount(drawn, inView) {
 
 function updateMapNote(siteCount, placedCount, named, unnamed) {
   const parts = [];
-  parts.push(`Catalogue: ${catalogueSites.length} known dive sites ` +
-             `(OpenStreetMap, ODbL) — green.`);
+  const nSites = catalogueSites.filter((s) => (s.kind || 'site') === 'site').length;
+  const nFin = catalogueSites.filter((s) => s.src === 'mymaps').length;
+  parts.push(`Catalogue: ${nSites} known dive sites — green. ` +
+             `${nFin} Finnish entries from the DeepLog Google My Maps map, ` +
+             `the rest from OpenStreetMap (ODbL).`);
   if (siteCount) {
     parts.push(`Your dives: ${siteCount} site(s), ${placedCount} dive(s) — blue.`);
   } else {
@@ -1331,6 +1392,11 @@ document.getElementById('btn-site-back').addEventListener('click', () => switchT
 
 document.getElementById('cat-toggle').addEventListener('change', (e) => {
   showCatalogue = e.target.checked;
+  drawCatalogueMarkers();
+});
+
+document.getElementById('svc-toggle').addEventListener('change', (e) => {
+  showServices = e.target.checked;
   drawCatalogueMarkers();
 });
 
