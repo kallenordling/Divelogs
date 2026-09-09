@@ -179,7 +179,8 @@ const dive = (o) => Object.assign({
   ok('note credits OpenStreetMap', /OpenStreetMap/.test(r.note) && /ODbL/.test(r.note), r.note);
   ok('note says no dives of your own are placed',
      /None of your own dives/.test(r.note), r.note);
-  ok('catalogue count reported', /in view/.test(r.catCount), r.catCount);
+  ok('count names dive sites explicitly, not just a number',
+     /dive sites? in view/.test(r.catCount), r.catCount);
   ok('invalidateSize called for the hidden container', r.record.invalidated > 0);
 
   // ── The Google My Maps source is what covers Finland ─────────────────────
@@ -217,6 +218,12 @@ const dive = (o) => Object.assign({
   ok('clubs styled apart from dive sites',
      r.record.catalogue.some((m) => m.opts.fillColor === '#5b7794'),
      JSON.stringify(r.record.catalogue.map((m) => m.opts.fillColor)));
+  // With clubs shown the label must still say how many are dive sites, so a
+  // club-heavy city view is never read as "the catalogue is only clubs".
+  ok('count separates sites from clubs',
+     /dive sites?/.test(r.window.document.getElementById('cat-count').textContent) &&
+     /club/.test(r.window.document.getElementById('cat-count').textContent),
+     r.window.document.getElementById('cat-count').textContent);
 
   // ── Your own dives sit on top, styled differently ────────────────────────
   r = await run([dive({ site_name: 'Vetokannas' })]);

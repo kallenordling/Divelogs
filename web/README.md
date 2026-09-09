@@ -86,6 +86,11 @@ npm install      # jsdom
 npm test
 ```
 
+`npm run live` is different: it fetches the **deployed** page and data files
+and checks what the map actually draws over Finland. Use it when the site
+looks wrong in a browser, to tell a code problem from a stale deploy or a
+cached tab.
+
 The tests boot `index.html` in jsdom with a fake Supabase and check sign-in,
 bad-password handling, the dive list and its ordering, the profile chart,
 cylinder maths, stats, sign-out, token refresh, and that a site name containing

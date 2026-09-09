@@ -1244,6 +1244,8 @@ function drawCatalogueMarkers() {
     lodging: { radius: 3.5, color: '#e0c07a', fillColor: '#a8863c' },
   };
 
+  const tally = { site: 0, club: 0, lodging: 0 };
+
   for (const site of catalogueSites) {
     const kind = site.kind || 'site';
     if (kind !== 'site' && !showServices) continue;
@@ -1251,6 +1253,7 @@ function drawCatalogueMarkers() {
     inView++;
     if (drawn >= CAP) continue;
     drawn++;
+    tally[kind] = (tally[kind] || 0) + 1;
 
     const st = STYLE[kind] || STYLE.site;
     const where = [site.country, site.region, site.desc].filter(Boolean).join(' · ');
@@ -1264,15 +1267,23 @@ function drawCatalogueMarkers() {
       (site.source ? `<br><a href="${esc(site.source)}" target="_blank" rel="noopener">source</a>` : '') +
       `<br><span style="color:#8fb0c8">${site.lat.toFixed(4)}, ${site.lon.toFixed(4)}</span>`);
   }
-  updateCatalogueCount(drawn, inView);
+  updateCatalogueCount(drawn, inView, tally);
 }
 
-function updateCatalogueCount(drawn, inView) {
+function updateCatalogueCount(drawn, inView, tally = {}) {
   const el = document.getElementById('cat-count');
   if (!el) return;
-  el.textContent = !showCatalogue ? 'hidden'
-    : inView > drawn ? `showing ${drawn} of ${inView} in view — zoom in for the rest`
-    : `${drawn} in view`;
+  if (!showCatalogue) { el.textContent = 'hidden'; return; }
+
+  // Spell out the split, so a viewport full of clubs is never mistaken for
+  // the catalogue having nothing but clubs in it.
+  const bits = [];
+  if (tally.site) bits.push(`${tally.site} dive site${tally.site === 1 ? '' : 's'}`);
+  if (tally.club) bits.push(`${tally.club} club${tally.club === 1 ? '' : 's'}`);
+  if (tally.lodging) bits.push(`${tally.lodging} stay${tally.lodging === 1 ? '' : 's'}`);
+
+  el.textContent = (bits.length ? bits.join(', ') : 'nothing') + ' in view'
+    + (inView > drawn ? ` (of ${inView} — zoom in for the rest)` : '');
 }
 
 function updateMapNote(siteCount, placedCount, named, unnamed) {
