@@ -31,6 +31,15 @@ const DIVES = [
   },
 ];
 
+DIVES.push({
+  date: '2025-08-02', time: '13:00:00', site_name: 'Vetokannas',
+  device_name: 'Shearwater Teric', maxdepth: 22.5, avgdepth: 11, duration: 3000,
+  divemode: 'OC', temp_min: 6.0, temp_surface: 19,
+  site_lat: null, site_lon: null,          // no coordinates saved by the app
+  gasmixes: [], tanks: [],
+  samples: Array.from({ length: 40 }, (_, i) => [i * 60000, Math.sin(i / 40 * Math.PI) * 22.5, 6 + i * 0.1]),
+});
+
 const vc = new VirtualConsole();
 const errors = [];
 vc.on('jsdomError', (e) => errors.push('jsdomError: ' + e.message));
@@ -58,11 +67,19 @@ window.fetch = async (url, opts = {}) => {
     return { ok: true, status: 200, json: async () => ({
       access_token: 'AT1', refresh_token: 'RT1', user: { email: body.email, id: 'user-1' } }) };
   }
+  if (u.includes('dive_sites.json')) {
+    return { ok: true, status: 200, json: async () => ({ sites: [
+      { name: 'Ojamon kaivoslampi', lat: 60.239814, lon: 24.034529, country: 'Finland' },
+      { name: 'Vetokannas', lat: 59.989997, lon: 24.417312, country: 'Finland' },
+    ] }) };
+  }
   if (u.includes('/rest/v1/dives')) {
     if ((opts.headers || {}).Authorization !== 'Bearer AT1') {
       return { ok: false, status: 401, json: async () => ({}) };
     }
-    return { ok: true, status: 200, json: async () => DIVES };
+    const sorted = [...DIVES].sort((a, b) =>
+      (b.date + b.time).localeCompare(a.date + a.time));
+    return { ok: true, status: 200, json: async () => sorted };
   }
   return { ok: false, status: 404, json: async () => ({}) };
 };
@@ -101,14 +118,18 @@ function check(name, cond, extra = '') {
   check('session persisted', !!window.localStorage.getItem('deeplog.session'));
 
   const cards = window.document.querySelectorAll('.dive-card');
-  check('both dives listed', cards.length === 2, 'got ' + cards.length);
+  check('all dives listed', cards.length === 3, 'got ' + cards.length);
 
   // Newest first, numbered from the oldest.
-  check('newest dive first', cards[0].textContent.includes('Ojamon'), cards[0].textContent.trim());
-  check('dive numbered from oldest', cards[0].querySelector('.dive-num').textContent === '2',
+  // Newest first (2025-08-02), numbered from the oldest, so it is number 3.
+  check('newest dive first', cards[0].textContent.includes('Vetokannas'), cards[0].textContent.trim());
+  check('dive numbered from oldest', cards[0].querySelector('.dive-num').textContent === '3',
     cards[0].querySelector('.dive-num').textContent);
-  check('unnamed site falls back', cards[1].textContent.includes('Unnamed site'));
-  check('duration formatted', cards[0].textContent.includes('46:00'), cards[0].textContent.trim());
+  check('oldest dive numbered 1', cards[2].querySelector('.dive-num').textContent === '1',
+    cards[2].querySelector('.dive-num').textContent);
+  check('unnamed site falls back', cards[2].textContent.includes('Unnamed site'),
+    cards[2].textContent.trim());
+  check('duration formatted', cards[1].textContent.includes('46:00'), cards[1].textContent.trim());
 
   // 4. Search filters.
   $('#search').value = 'ojamon';
@@ -120,7 +141,7 @@ function check(name, cond, extra = '') {
   await tick();
 
   // 5. Detail view with a real profile.
-  window.document.querySelectorAll('.dive-card')[0].click();
+  window.document.querySelectorAll('.dive-card')[1].click();   // Ojamon
   await tick();
   const detail = $('#detail-body').innerHTML;
   check('detail tab shown', !$('#tab-detail').classList.contains('hidden'));
@@ -133,7 +154,7 @@ function check(name, cond, extra = '') {
   // 6. A dive whose JSON columns came back as strings must still render.
   $('#btn-back').click();
   await tick();
-  window.document.querySelectorAll('.dive-card')[1].click();
+  window.document.querySelectorAll('.dive-card')[2].click();   // the string-JSON dive
   await tick();
   const d2 = $('#detail-body').innerHTML;
   check('string JSON columns parsed', d2.includes('Air'), 'gas table missing for string columns');
@@ -167,7 +188,41 @@ function check(name, cond, extra = '') {
   $('#btn-signin').click();
   await tick(); await tick(); await tick();
   check('site name is escaped', window.__pwned === undefined &&
-        window.document.querySelector('.dive-card').textContent.includes('<img'));
+        [...window.document.querySelectorAll('.dive-card')]
+          .some((c) => c.textContent.includes('<img')));
+
+  // 11. Sites tab: grouping, counts, and the temperature-coloured profile.
+  window.document.querySelector('nav button[data-tab="sites"]').click();
+  await tick(); await tick();
+  const siteCards = window.document.querySelectorAll('#site-list .dive-card');
+  check('sites listed', siteCards.length === 2, 'got ' + siteCards.length);
+  check('site shows its dive count',
+    siteCards[0].querySelector('.dive-num').textContent === '1',
+    siteCards[0].querySelector('.dive-num').textContent);
+
+  // The catalogue supplies coordinates the dive row lacks, so no "no position".
+  const vetokannas = [...siteCards].find((c) => c.textContent.includes('Vetokannas'));
+  check('catalogue fills in a missing position',
+    vetokannas && !vetokannas.textContent.includes('no position'),
+    vetokannas ? vetokannas.textContent.trim() : 'card missing');
+
+  vetokannas.click();
+  await tick();
+  const site = $('#site-body').innerHTML;
+  check('site view opens', !$('#tab-site').classList.contains('hidden'));
+  check('site states the dive count', site.includes('1 recorded dive'), 'count line missing');
+  check('site profile drawn', site.includes('<svg') && site.includes('<path'));
+  check('profile coloured by temperature', /stroke="rgb\(\d+,\d+,\d+\)"/.test(site),
+    'no rgb() stroke found');
+  check('temperature scale labelled', site.includes('°'), 'no degree labels');
+  check('site says where its position came from', site.includes('from the site catalogue'));
+  check('sites tab stays highlighted',
+    window.document.querySelector('nav button[data-tab="sites"]').classList.contains('active'));
+
+  // 12. Back out, then the map counts placed dives instead of silently empty.
+  $('#btn-site-back').click();
+  await tick();
+  check('back returns to the site list', !$('#tab-sites').classList.contains('hidden'));
 
   // ── Report ────────────────────────────────────────────────────────────────
   let failed = 0;

@@ -183,6 +183,7 @@
 
   <nav>
     <button data-tab="dives" class="active">Dive log</button>
+    <button data-tab="sites">Sites</button>
     <button data-tab="stats">Stats</button>
     <button data-tab="map">Map</button>
   </nav>
@@ -210,10 +211,21 @@
       <div id="per-year"></div>
     </section>
 
+    <!-- Sites -->
+    <section id="tab-sites" class="hidden">
+      <div id="site-list"></div>
+    </section>
+
+    <!-- One site: dive count and the temperature-coloured profile -->
+    <section id="tab-site" class="hidden">
+      <button class="ghost" id="btn-site-back" style="margin-bottom:16px">← Back to sites</button>
+      <div id="site-body"></div>
+    </section>
+
     <!-- Map -->
     <section id="tab-map" class="hidden">
       <div id="map"></div>
-      <div class="note">Only dives that have a saved site with coordinates appear here.</div>
+      <div class="note" id="map-note"></div>
     </section>
   </main>
 </div>
@@ -350,6 +362,54 @@ function asArray(v) {
   return [];
 }
 
+// ── Site catalogue ─────────────────────────────────────────────────────────
+// The phone app only writes site_lat/site_lon when the dive's site name
+// matched one the user had already saved, so most rows arrive with a name and
+// no position. The bundled catalogue (the same file the app ships) fills those
+// in by name, which is what puts dives on the map at all.
+
+let catalogue = null;          // Map of folded name -> { lat, lon }
+
+const foldName = (s) => String(s ?? '')
+  .toLowerCase().normalize('NFD').replace(/\p{Mn}+/gu, '').trim();
+
+async function loadCatalogue() {
+  if (catalogue) return catalogue;
+  catalogue = new Map();
+  try {
+    const res = await fetch('dive_sites.json');
+    if (!res.ok) throw new Error(String(res.status));
+    for (const s of (await res.json()).sites || []) {
+      const k = foldName(s.name);
+      if (k && !catalogue.has(k)) catalogue.set(k, { lat: s.lat, lon: s.lon });
+    }
+  } catch {
+    // Not fatal: dives that carry their own coordinates still work.
+  }
+  return catalogue;
+}
+
+/** Coordinates for a dive: its own if present, otherwise looked up by name. */
+function coordsFor(d) {
+  if (d.site_lat != null && d.site_lon != null) {
+    return { lat: +d.site_lat, lon: +d.site_lon, fromCatalogue: false };
+  }
+  const hit = catalogue && d.site_name && catalogue.get(foldName(d.site_name));
+  return hit ? { lat: hit.lat, lon: hit.lon, fromCatalogue: true } : null;
+}
+
+/** Dives grouped by site name, newest-first within each site. */
+function groupBySite() {
+  const groups = new Map();
+  for (const d of dives) {
+    const name = (d.site_name || '').trim();
+    if (!name) continue;
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(d);
+  }
+  return groups;
+}
+
 // ── Dive list ──────────────────────────────────────────────────────────────
 
 function renderList() {
@@ -473,6 +533,216 @@ function profileSvg(samples) {
     </div>`;
 }
 
+// ── Temperature-coloured site profile ──────────────────────────────────────
+
+/**
+ * Blue (cold) through green to red (warm), across the temperature range that
+ * this site actually recorded — a fixed absolute scale would render a Finnish
+ * quarry as one flat shade of blue.
+ */
+function tempColour(c, lo, hi) {
+  const t = hi > lo ? (c - lo) / (hi - lo) : 0.5;
+  const stops = [
+    [0.0, [ 49,  84, 196]],   // deep blue
+    [0.35, [ 38, 166, 214]],  // cyan
+    [0.6, [ 94, 190, 106]],   // green
+    [0.8, [242, 190,  70]],   // amber
+    [1.0, [225,  74,  56]],   // red
+  ];
+  const x = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < stops.length; i++) {
+    if (x <= stops[i][0]) {
+      const [a, ca] = stops[i - 1], [b, cb] = stops[i];
+      const f = (x - a) / (b - a || 1);
+      const ch = ca.map((v, j) => Math.round(v + (cb[j] - v) * f));
+      return `rgb(${ch[0]},${ch[1]},${ch[2]})`;
+    }
+  }
+  return 'rgb(225,74,56)';
+}
+
+/**
+ * Every dive at one site on a single chart: time across, depth down, each
+ * segment coloured by the temperature recorded there.
+ *
+ * Drawn as one <path> per colour bucket rather than per sample — a 3,000-sample
+ * dive would otherwise become 3,000 SVG elements and crawl.
+ */
+function siteProfileSvg(siteDives) {
+  const tracks = siteDives
+    .map((d) => asArray(d.samples)
+      .map((s) => ({ t: s[0] / 1000, d: s[1], c: s[2] }))
+      .filter((p) => isFinite(p.t) && isFinite(p.d)))
+    .filter((pts) => pts.length > 1);
+
+  if (!tracks.length) {
+    return '<div class="empty">No profiles recorded at this site yet.</div>';
+  }
+
+  const all = tracks.flat();
+  const maxT = Math.max(...all.map((p) => p.t)) || 1;
+  const maxD = Math.max(...all.map((p) => p.d)) || 1;
+  const depthTop = maxD * 1.08;
+
+  const temps = all.map((p) => p.c).filter((c) => isFinite(c) && c !== 0);
+  const hasTemp = temps.length > 0;
+  const lo = hasTemp ? Math.min(...temps) : 0;
+  const hi = hasTemp ? Math.max(...temps) : 1;
+
+  const W = 900, H = 380, L = 54, R = 66, T = 16, B = 34;
+  const gw = W - L - R, gh = H - T - B;
+  const x = (t) => L + (t / maxT) * gw;
+  const y = (d) => T + (d / depthTop) * gh;
+
+  // Grid.
+  const step = maxD <= 12 ? 2 : maxD <= 30 ? 5 : maxD <= 60 ? 10 : 20;
+  let grid = '';
+  for (let d = 0; d <= depthTop; d += step) {
+    const py = y(d).toFixed(1);
+    grid += `<line x1="${L}" y1="${py}" x2="${W - R}" y2="${py}" stroke="#23415e"/>`;
+    grid += `<text x="${L - 8}" y="${+py + 4}" fill="#5f7f96" font-size="11" text-anchor="end">${d}</text>`;
+  }
+  const minutes = maxT / 60;
+  const mStep = Math.max(1, Math.ceil(minutes / 6));
+  for (let m = 0; m <= minutes; m += mStep) {
+    const px = x(m * 60).toFixed(1);
+    grid += `<line x1="${px}" y1="${T}" x2="${px}" y2="${T + gh}" stroke="#1a3049"/>`;
+    grid += `<text x="${px}" y="${H - 12}" fill="#5f7f96" font-size="11" text-anchor="middle">${m}′</text>`;
+  }
+
+  // Group consecutive segments into colour buckets.
+  const BUCKETS = 24;
+  const bucketOf = (c) => (!isFinite(c) || c === 0) ? -1
+    : Math.max(0, Math.min(BUCKETS - 1, Math.floor((c - lo) / ((hi - lo) || 1) * BUCKETS)));
+
+  const paths = new Map();       // bucket -> path data
+  const addSeg = (b, p, q) => {
+    const dstr = `M${x(p.t).toFixed(1)},${y(p.d).toFixed(1)}L${x(q.t).toFixed(1)},${y(q.d).toFixed(1)}`;
+    paths.set(b, (paths.get(b) || '') + dstr);
+  };
+  for (const pts of tracks) {
+    for (let i = 1; i < pts.length; i++) addSeg(bucketOf(pts[i].c), pts[i - 1], pts[i]);
+  }
+
+  let lines = '';
+  for (const [b, dstr] of [...paths.entries()].sort((a, z) => a[0] - z[0])) {
+    const stroke = b < 0 ? '#3d5a75'
+      : tempColour(lo + (b + 0.5) / BUCKETS * (hi - lo), lo, hi);
+    lines += `<path d="${dstr}" fill="none" stroke="${stroke}" stroke-width="2.2"
+                    stroke-linecap="round" opacity="${tracks.length > 6 ? 0.65 : 0.9}"/>`;
+  }
+
+  // Colour bar for the temperature scale.
+  let bar = '';
+  if (hasTemp) {
+    const bx = W - R + 14, bw = 12, bh = gh * 0.7, by = T + gh * 0.1;
+    for (let i = 0; i < 40; i++) {
+      const c = lo + (i / 39) * (hi - lo);
+      bar += `<rect x="${bx}" y="${(by + bh - (i + 1) / 40 * bh).toFixed(1)}"
+                    width="${bw}" height="${(bh / 40 + 0.6).toFixed(2)}"
+                    fill="${tempColour(c, lo, hi)}"/>`;
+    }
+    bar += `<text x="${bx + bw + 4}" y="${(by + 9).toFixed(1)}" fill="#8fb0c8" font-size="11">${hi.toFixed(1)}°</text>`;
+    bar += `<text x="${bx + bw + 4}" y="${(by + bh).toFixed(1)}" fill="#8fb0c8" font-size="11">${lo.toFixed(1)}°</text>`;
+  }
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
+         aria-label="Depth against time for ${tracks.length} dive(s), coloured by water temperature from ${lo.toFixed(1)} to ${hi.toFixed(1)} degrees Celsius">
+      <rect width="${W}" height="${H}" fill="#0d1b2a" rx="8"/>
+      ${grid}${lines}${bar}
+      <text x="${L}" y="${T - 3}" fill="#5f7f96" font-size="11">depth (m) / time (min)</text>
+    </svg>
+    <div class="legend">
+      ${hasTemp ? '<span>Colour = water temperature (°C)</span>'
+                : '<span>No temperature recorded at this site</span>'}
+      <span>${tracks.length} profile${tracks.length === 1 ? '' : 's'}</span>
+    </div>`;
+}
+
+// ── Sites ──────────────────────────────────────────────────────────────────
+
+async function renderSites() {
+  await loadCatalogue();
+  const groups = groupBySite();
+  const el = document.getElementById('site-list');
+
+  if (!groups.size) {
+    el.innerHTML = `<div class="empty">None of your dives have a site name yet.<br>
+      Assign sites in the phone app and they will show up here.</div>`;
+    return;
+  }
+
+  const rows = [...groups.entries()]
+    .map(([name, ds]) => ({
+      name, ds,
+      deepest: Math.max(...ds.map((d) => Number(d.maxdepth) || 0)),
+      last: ds.map((d) => d.date).sort().slice(-1)[0],
+      located: !!coordsFor(ds[0]),
+    }))
+    .sort((a, b) => b.ds.length - a.ds.length || a.name.localeCompare(b.name));
+
+  el.innerHTML = `
+    <div class="note" style="margin:0 0 14px">${groups.size} site(s) ·
+      ${rows.reduce((a, r) => a + r.ds.length, 0)} dive(s) with a site name</div>
+    <div class="dive-grid">
+      ${rows.map((r, i) => `
+        <div class="dive-card" data-site="${i}">
+          <div class="dive-num">${r.ds.length}</div>
+          <div class="dive-main">
+            <div class="site">${esc(r.name)}${r.located ? '' : ' <span style="color:var(--dim);font-weight:400">· no position</span>'}</div>
+            <div class="meta">last dived ${prettyDate(r.last)}</div>
+          </div>
+          <div class="dive-stats">
+            <div class="depth">${num(r.deepest)} m</div>
+            <div class="dur">deepest</div>
+          </div>
+        </div>`).join('')}
+    </div>`;
+
+  el.querySelectorAll('.dive-card').forEach((card) => {
+    card.addEventListener('click', () => showSite(rows[+card.dataset.site]));
+  });
+}
+
+function showSite(row) {
+  const temps = row.ds.flatMap((d) => [d.temp_min, d.temp_max])
+    .filter((t) => t != null && isFinite(t)).map(Number);
+  const totalTime = row.ds.reduce((a, d) => a + (Number(d.duration) || 0), 0);
+  const pos = coordsFor(row.ds[0]);
+
+  const tiles = [
+    ['Dives recorded', row.ds.length],
+    ['Deepest', `${num(row.deepest)}<small> m</small>`],
+    ['Total time', `${Math.floor(totalTime / 3600)}<small> h</small> ${Math.floor((totalTime % 3600) / 60)}<small> m</small>`],
+    ['Coldest', temps.length ? `${num(Math.min(...temps))}<small> °C</small>` : '–'],
+    ['Warmest', temps.length ? `${num(Math.max(...temps))}<small> °C</small>` : '–'],
+    ['Last dived', prettyDate(row.last)],
+  ];
+
+  document.getElementById('site-body').innerHTML = `
+    <div class="detail-head"><h2>${esc(row.name)}</h2></div>
+    <div class="detail-sub">${row.ds.length} recorded dive${row.ds.length === 1 ? '' : 's'}${
+      pos ? ` · ${num(pos.lat, 5)}, ${num(pos.lon, 5)}${pos.fromCatalogue ? ' (from the site catalogue)' : ''}` : ''}</div>
+
+    <div class="profile-wrap">${siteProfileSvg(row.ds)}</div>
+
+    <div class="tiles">
+      ${tiles.map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('')}
+    </div>
+
+    <h3>Dives here</h3>
+    <table>
+      <tr><th>Date</th><th>Max depth</th><th>Duration</th><th>Water</th></tr>
+      ${[...row.ds].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((d) => `
+        <tr><td>${prettyDate(d.date)}</td><td>${num(d.maxdepth)} m</td>
+        <td>${duration(d.duration)}</td>
+        <td>${d.temp_min != null ? num(d.temp_min) + ' °C' : '–'}</td></tr>`).join('')}
+    </table>`;
+
+  switchTab('site');
+}
+
 // ── Detail ─────────────────────────────────────────────────────────────────
 
 function showDetail(d, order) {
@@ -586,8 +856,18 @@ function renderStats() {
 
 let map = null, markerLayer = null;
 
-function renderMap() {
-  const located = dives.filter((d) => d.site_lat != null && d.site_lon != null);
+async function renderMap() {
+  await loadCatalogue();
+
+  // Resolve each dive's position, falling back to the catalogue by name.
+  const placed = [];
+  let named = 0, unnamed = 0;
+  for (const d of dives) {
+    const c = coordsFor(d);
+    if (c) placed.push({ dive: d, ...c });
+    else if ((d.site_name || '').trim()) named++;
+    else unnamed++;
+  }
 
   if (!map) {
     map = L.map('map', { scrollWheelZoom: true }).setView([30, 10], 2);
@@ -601,10 +881,12 @@ function renderMap() {
 
   // One marker per site, with a dive count rather than a pin per dive.
   const bySite = new Map();
-  for (const d of located) {
-    const key = `${d.site_name || ''}@${d.site_lat},${d.site_lon}`;
-    if (!bySite.has(key)) bySite.set(key, { name: d.site_name, lat: +d.site_lat, lon: +d.site_lon, dives: [] });
-    bySite.get(key).dives.push(d);
+  for (const p of placed) {
+    const key = `${p.dive.site_name || ''}@${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
+    if (!bySite.has(key)) {
+      bySite.set(key, { name: p.dive.site_name, lat: p.lat, lon: p.lon, dives: [] });
+    }
+    bySite.get(key).dives.push(p.dive);
   }
 
   const points = [];
@@ -618,6 +900,19 @@ function renderMap() {
   }
   if (points.length) map.fitBounds(points, { padding: [40, 40], maxZoom: 11 });
 
+  // Say why the map is empty rather than showing a blank world.
+  const note = document.getElementById('map-note');
+  const parts = [];
+  if (bySite.size) parts.push(`${bySite.size} site(s), ${placed.length} dive(s) shown.`);
+  if (named) {
+    parts.push(`${named} dive(s) have a site name that is not in the catalogue and no ` +
+      `saved coordinates — assign the site in the phone app, or add it under Sites there, ` +
+      `and it will appear here.`);
+  }
+  if (unnamed) parts.push(`${unnamed} dive(s) have no site at all.`);
+  if (!bySite.size && !named && !unnamed) parts.push('No dives yet.');
+  note.textContent = parts.join(' ');
+
   // Leaflet mis-measures a container that was hidden when it was created.
   setTimeout(() => map.invalidateSize(), 60);
 }
@@ -625,13 +920,16 @@ function renderMap() {
 // ── Navigation ─────────────────────────────────────────────────────────────
 
 function switchTab(name) {
-  for (const id of ['dives', 'detail', 'stats', 'map']) {
+  for (const id of ['dives', 'detail', 'sites', 'site', 'stats', 'map']) {
     document.getElementById('tab-' + id).classList.toggle('hidden', id !== name);
   }
+  // A detail view keeps its parent tab highlighted.
+  const top = name === 'detail' ? 'dives' : name === 'site' ? 'sites' : name;
   document.querySelectorAll('nav button').forEach((b) =>
-    b.classList.toggle('active', b.dataset.tab === name));
+    b.classList.toggle('active', b.dataset.tab === top));
 
   if (name === 'stats') renderStats();
+  if (name === 'sites') renderSites();
   if (name === 'map') renderMap();
 }
 
@@ -702,6 +1000,7 @@ document.getElementById('btn-signup').addEventListener('click', handleSignUp);
 document.getElementById('btn-signout').addEventListener('click', signOut);
 document.getElementById('btn-refresh').addEventListener('click', reload);
 document.getElementById('btn-back').addEventListener('click', () => switchTab('dives'));
+document.getElementById('btn-site-back').addEventListener('click', () => switchTab('sites'));
 document.getElementById('search').addEventListener('input', renderList);
 document.getElementById('password').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') handleSignIn();

@@ -5,6 +5,9 @@ password as the phone app** — both talk to the same Supabase project, so dives
 uploaded from the phone show up here straight away.
 
 - `index.html` — the whole app: no build step, no dependencies to install
+- `dive_sites.json` — a copy of `app/src/main/assets/dive_sites.json`, used to
+  turn a dive's site *name* into coordinates. A unit test fails if the two
+  copies drift, so re-copy it whenever the app asset changes.
 - `test/` — jsdom tests that drive the real UI against a stubbed backend
 
 ## What it does
@@ -15,7 +18,21 @@ uploaded from the phone show up here straight away.
 - Per-dive detail: depth and temperature profile drawn as inline SVG, plus gas
   mixes and cylinder pressures
 - Stats: dive count, time underwater, deepest, coldest, sites, dives per year
-- Map of every dive that has site coordinates (Leaflet + OpenStreetMap tiles)
+- Sites: every site you have dived, with the number of recorded dives, and a
+  combined profile of all dives there — time across, depth down, each segment
+  coloured by the water temperature recorded at that point
+- Map of your dive sites (Leaflet + OpenStreetMap tiles)
+
+### Why the map may look empty
+
+The phone app only stores coordinates on a dive when its site name matched a
+site you had already saved (`MainActivity.kt`, `uploadNewDives`). Dives logged
+against an unsaved site arrive with a name and no position.
+
+The web app works around this by looking the name up in `dive_sites.json`, so
+anything in the bundled catalogue is placed automatically. Names that are in
+neither place cannot be placed — the Map tab says how many dives that affects,
+and the fix is to save the site in the phone app under **Sites**.
 
 ## Deploying
 

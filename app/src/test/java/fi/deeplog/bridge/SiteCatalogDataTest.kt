@@ -76,6 +76,20 @@ class SiteCatalogDataTest {
         }
     }
 
+    @Test fun webCopyMatchesTheAppAsset() {
+        // The web front end resolves site names to coordinates with its own
+        // copy, served from web/. Nothing regenerates it, so a change to the
+        // asset that skips the copy would silently leave the map short of
+        // sites.
+        val app = File("src/main/assets/dive_sites.json")
+        val web = File("../web/dive_sites.json")
+        assertTrue("web/dive_sites.json is missing", web.exists())
+        assertEquals(
+            "web/dive_sites.json has drifted from the app asset — copy it across",
+            app.readText(), web.readText()
+        )
+    }
+
     @Test fun attributionIsRecorded() {
         val meta = doc.getJSONObject("metadata")
         // ODbL requires the source to travel with the data.
