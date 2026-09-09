@@ -77,6 +77,33 @@ anything in the bundled catalogue is placed automatically. Names that are in
 neither place cannot be placed — the Map tab says how many dives that affects,
 and the fix is to save the site in the phone app under **Sites**.
 
+## Installing it as an app
+
+The page is a PWA: a manifest, an icon set and a service worker that precaches
+the shell and both site catalogues. That makes it installable on **both**
+platforms and usable with no signal — which matters on a boat.
+
+**Android / Chrome** — an **Install** button appears in the top bar, or use
+the browser menu's *Install app*. It then runs full-screen with its own icon,
+and the launcher offers *Log a dive* and *Map* as long-press shortcuts.
+
+**iPhone / Safari** — Share → **Add to Home Screen**. iOS does not offer an
+install prompt, so there is no button; the app icon, name and full-screen
+behaviour all come from the same manifest and meta tags.
+
+Offline, the app shell, the icons and both catalogues come from the cache, so
+the dive log, sites and statistics open and previously seen map tiles still
+draw. Supabase is never cached — dives must be current, and caching a
+signed-in response is a way to leak it — so syncing needs a connection.
+
+Bump `VERSION` in `sw.js` when the shell changes; old caches are dropped on
+activation, and the page shows "a new version is ready" rather than swapping
+itself out mid-entry.
+
+Verify it with `npm run pwa` (needs Chrome): it checks the manifest the way
+Chrome parses it, that the worker installs and precaches, and that the app
+still opens with the network switched off.
+
 ## Deploying
 
 It is a static file. Any host will do:

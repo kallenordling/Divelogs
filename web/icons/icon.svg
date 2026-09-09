@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- DeepLog mark: a dive profile — descent, bottom time, safety stop, surface. -->
+  <rect width="512" height="512" fill="#07141F"/>
+  <g transform="translate(0,8)">
+    <!-- Water column above the trace. -->
+    <path d="M84 118 L150 372 Q205 400 262 372 L330 236 L400 236 L428 118 Z"
+          fill="#123044"/>
+    <!-- The trace itself. -->
+    <path d="M84 118 L150 372 Q205 400 262 372 L330 236 L400 236 L428 118"
+          fill="none" stroke="#39C6E8" stroke-width="17"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Deepest point. -->
+    <circle cx="206" cy="386" r="17" fill="#39C6E8"/>
+  </g>
+</svg>

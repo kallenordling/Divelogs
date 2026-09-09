@@ -14,6 +14,16 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 <link rel="stylesheet" href="css/app.css">
+
+<!-- Installable on Android and, via Add to Home Screen, on iOS. -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DeepLog">
+<meta name="description" content="Your personal map of the underwater world: dive log, sites, map and statistics.">
 </head>
 <body>
 
@@ -58,6 +68,7 @@
 
     <span class="grow"></span>
 
+    <button class="btn btn-ghost hidden" id="btn-install">Install</button>
     <button class="btn btn-primary" id="nav-log">
       <svg class="ico"><use href="#i-plus"></use></svg> Log dive
     </button>

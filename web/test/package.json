@@ -4,9 +4,11 @@
   "description": "Runs web/index.html in jsdom against a stubbed Supabase.",
   "scripts": {
     "test": "node auth.test.js && node dives.test.js && node sites.test.js && node map.test.js && node logdive.test.js",
-    "live": "node live.check.js"
+    "live": "node live.check.js",
+    "pwa": "node pwa.check.js"
   },
   "devDependencies": {
-    "jsdom": "^24.0.0"
+    "jsdom": "^24.0.0",
+    "ws": "^8.18.0"
   }
 }

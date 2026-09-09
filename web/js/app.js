@@ -119,6 +119,62 @@ document.addEventListener('click', (e) => {
   if (b) DL.navigate(b.dataset.back);
 });
 
+// ── Installing as an app ───────────────────────────────────────────────────
+
+/**
+ * Chrome and Edge fire beforeinstallprompt and let the page ask; Safari does
+ * not, and iOS installs happen through Share → Add to Home Screen instead. So
+ * the button only appears when there is genuinely a prompt to show.
+ */
+let installPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  DL.el('btn-install').classList.remove('hidden');
+});
+
+DL.el('btn-install').addEventListener('click', async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  const { outcome } = await installPrompt.userChoice;
+  installPrompt = null;
+  DL.el('btn-install').classList.add('hidden');
+  if (outcome === 'accepted') DL.toast('DeepLog installed', 'ok');
+});
+
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  DL.el('btn-install').classList.add('hidden');
+});
+
+// Register the service worker: offline use, and what makes it installable.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      // Tell the user when a new version is ready rather than swapping the
+      // app out from under them mid-dive-entry.
+      reg.addEventListener('updatefound', () => {
+        const sw = reg.installing;
+        if (!sw) return;
+        sw.addEventListener('statechange', () => {
+          if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+            DL.toast('A new version is ready — reload to update');
+          }
+        });
+      });
+    }).catch(() => { /* offline support is optional, never fatal */ });
+  });
+}
+
+/** Home-screen shortcuts arrive as ?action=log or ?tab=map. */
+function applyLaunchIntent() {
+  const q = new URLSearchParams(location.search);
+  if (q.get('action') === 'log') DL.openLogDive();
+  else if (q.get('tab')) DL.navigate(q.get('tab'));
+  if (q.toString()) history.replaceState(null, '', location.pathname);
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 
 (async () => {
@@ -128,6 +184,7 @@ document.addEventListener('click', (e) => {
     try {
       await reload();
       await enterApp();
+      applyLaunchIntent();
       return;
     } catch {
       DL.clearSession();
