@@ -25,7 +25,9 @@ uploaded from the phone show up here straight away.
 - Stats: dive count, time underwater, deepest, coldest, sites, dives per year
 - Sites: every site you have dived, with the number of recorded dives, and a
   combined profile of all dives there — time across, depth down, each segment
-  coloured by the water temperature recorded at that point
+  coloured by the water temperature recorded at that point. Map markers link
+  straight to this view, including catalogue sites you have never dived, which
+  open with their description and an empty profile
 - Map of **~3,500 known dive sites** — 238 of them in Finland — with your own
   logged dives picked out on top in blue. Only the sites in view are drawn,
   redrawn as you pan; there is a search box to jump to a site or a country,

@@ -148,8 +148,10 @@ async function run(dives, { withLeaflet = true } = {}) {
 const dive = (o) => Object.assign({
   date: '2025-05-01', time: '10:00:00', site_name: null, device_name: 'Teric',
   maxdepth: 20, avgdepth: 10, duration: 1800, divemode: 'OC',
+  temp_min: 6, temp_max: 14,
   site_lat: null, site_lon: null, gasmixes: [], tanks: [],
-  samples: [[0, 0, 10], [60000, 20, 8]],
+  samples: Array.from({ length: 30 }, (_, i) =>
+    [i * 60000, Math.sin(i / 30 * Math.PI) * 20, 6 + i * 0.25]),
 }, o);
 
 (async () => {
@@ -307,6 +309,59 @@ const dive = (o) => Object.assign({
      /Nothing in the catalogue matches/.test(
        r.window.document.getElementById('map-note').textContent),
      r.window.document.getElementById('map-note').textContent);
+
+  // ── Popups lead to the site's stats and temperature profile ─────────────
+  r = await run([
+    dive({ site_name: 'Vetokannas', date: '2025-05-01' }),
+    dive({ site_name: 'Vetokannas', date: '2025-07-02', maxdepth: 26 }),
+  ]);
+  const doc = r.window.document;
+
+  ok('your-dive popup links to the site view',
+     r.record.popups.some((p) => /class="site-link"/.test(p) && /Vetokannas/.test(p)),
+     'no link in the dive popup');
+  ok('catalogue popup links to the site view too',
+     r.record.popups.filter((p) => /class="site-link"/.test(p)).length > 1,
+     'catalogue popups carry no link');
+
+  // Leaflet inserts popup HTML into the page; simulate that, then click.
+  const host = doc.createElement('div');
+  host.innerHTML = r.record.popups.find((p) => /Vetokannas/.test(p) && /site-link/.test(p));
+  doc.body.appendChild(host);
+  host.querySelector('.site-link').click();
+  await r.tick(2);
+
+  ok('clicking the popup opens the site view',
+     !doc.getElementById('tab-site').classList.contains('hidden'),
+     'site tab still hidden');
+  const body = doc.getElementById('site-body').innerHTML;
+  ok('site view names the site', body.includes('Vetokannas'));
+  ok('site view reports the dive count', /2 recorded dives/.test(body),
+     body.slice(0, 200));
+  ok('site view draws the temperature profile',
+     body.includes('<svg') && /stroke="rgb\(\d+,\d+,\d+\)"/.test(body),
+     'no coloured profile');
+  ok('site view shows the stats tiles',
+     body.includes('Deepest') && body.includes('Coldest') && body.includes('26.0'),
+     'tiles missing');
+  ok('site view lists the dives', /Dives here/.test(body));
+
+  // ── A catalogue site never dived still opens, without crashing ──────────
+  r = await run([]);
+  const doc2 = r.window.document;
+  const host2 = doc2.createElement('div');
+  host2.innerHTML = r.record.popups.find((p) => /Kronprins/.test(p));
+  doc2.body.appendChild(host2);
+  host2.querySelector('.site-link').click();
+  await r.tick(2);
+
+  const body2 = doc2.getElementById('site-body').innerHTML;
+  ok('a never-dived catalogue site opens', body2.includes('Kronprins Gustav Adolf'),
+     body2.slice(0, 150));
+  ok('it says there are no dives yet', /No dives logged here yet/.test(body2), body2.slice(0, 200));
+  ok('it explains the empty profile', /no profile to draw/.test(body2));
+  ok('it shows the catalogue description', /sank 1788/.test(body2));
+  ok('no runtime error opening an undived site', r.errors.length === 0, r.errors.join(' | '));
 
   console.log(`\n${failed ? failed + ' failed' : 'all passed'}`);
   process.exit(failed ? 1 : 0);

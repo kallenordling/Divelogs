@@ -151,6 +151,9 @@
   .dot.cat  { background: #4a9d78; border: 1px solid #7fd4a8; }
   .dot.mine { background: #4fc3f7; border: 2px solid #0a1420; width: 13px; height: 13px; }
   .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card); color: var(--text); }
+  .leaflet-popup-content a.site-link {
+    display: inline-block; margin-top: 6px; font-weight: 600; color: var(--accent);
+  }
 
   .empty { color: var(--dim); text-align: center; padding: 48px 20px; }
 
@@ -956,12 +959,7 @@ async function renderSites() {
   }
 
   const rows = [...groups.entries()]
-    .map(([name, ds]) => ({
-      name, ds,
-      deepest: Math.max(...ds.map((d) => Number(d.maxdepth) || 0)),
-      last: ds.map((d) => d.date).sort().slice(-1)[0],
-      located: !!coordsFor(ds[0]),
-    }))
+    .map(([name, ds]) => siteRow(name, ds))
     .sort((a, b) => b.ds.length - a.ds.length || a.name.localeCompare(b.name));
 
   el.innerHTML = `
@@ -987,40 +985,95 @@ async function renderSites() {
   });
 }
 
+/** The shape the site view expects; `ds` may be empty for a site never dived. */
+function siteRow(name, ds) {
+  return {
+    name, ds,
+    deepest: ds.length ? Math.max(...ds.map((d) => Number(d.maxdepth) || 0)) : 0,
+    last: ds.length ? ds.map((d) => d.date).sort().slice(-1)[0] : null,
+    located: ds.length ? !!coordsFor(ds[0]) : false,
+  };
+}
+
+/**
+ * Opens the site view for a name, whether or not any dives were logged there.
+ * This is how the map popups reach the stats and the temperature profile.
+ */
+function openSiteByName(name) {
+  const groups = groupBySite();
+  let ds = groups.get(name);
+  if (!ds) {
+    // Popup names come from the catalogue, the log's own site_name, or a
+    // slightly different spelling of either; fall back to a folded match.
+    const target = foldName(name);
+    for (const [k, v] of groups) if (foldName(k) === target) { ds = v; break; }
+  }
+  showSite(siteRow(name, ds || []));
+}
+
 function showSite(row) {
+  const dived = row.ds.length > 0;
   const temps = row.ds.flatMap((d) => [d.temp_min, d.temp_max])
     .filter((t) => t != null && isFinite(t)).map(Number);
   const totalTime = row.ds.reduce((a, d) => a + (Number(d.duration) || 0), 0);
-  const pos = coordsFor(row.ds[0]);
+
+  // A site reached from the map may never have been dived, so fall back to
+  // the catalogue for its position and description.
+  const entry = catalogueSites.find((c) => foldName(c.name) === foldName(row.name));
+  const pos = dived ? coordsFor(row.ds[0])
+            : entry ? { lat: entry.lat, lon: entry.lon, fromCatalogue: true }
+            : null;
 
   const tiles = [
     ['Dives recorded', row.ds.length],
-    ['Deepest', `${num(row.deepest)}<small> m</small>`],
-    ['Total time', `${Math.floor(totalTime / 3600)}<small> h</small> ${Math.floor((totalTime % 3600) / 60)}<small> m</small>`],
+    ['Deepest', dived ? `${num(row.deepest)}<small> m</small>` : '–'],
+    ['Total time', dived
+      ? `${Math.floor(totalTime / 3600)}<small> h</small> ${Math.floor((totalTime % 3600) / 60)}<small> m</small>`
+      : '–'],
     ['Coldest', temps.length ? `${num(Math.min(...temps))}<small> °C</small>` : '–'],
     ['Warmest', temps.length ? `${num(Math.max(...temps))}<small> °C</small>` : '–'],
-    ['Last dived', prettyDate(row.last)],
+    ['Last dived', dived ? prettyDate(row.last) : 'never'],
   ];
+
+  const where = entry
+    ? [entry.country, entry.region, entry.desc].filter(Boolean).join(' · ')
+    : '';
 
   document.getElementById('site-body').innerHTML = `
     <div class="detail-head"><h2>${esc(row.name)}</h2></div>
-    <div class="detail-sub">${row.ds.length} recorded dive${row.ds.length === 1 ? '' : 's'}${
-      pos ? ` · ${num(pos.lat, 5)}, ${num(pos.lon, 5)}${pos.fromCatalogue ? ' (from the site catalogue)' : ''}` : ''}</div>
+    <div class="detail-sub">${
+      dived ? `${row.ds.length} recorded dive${row.ds.length === 1 ? '' : 's'}`
+            : 'No dives logged here yet'}${
+      where ? ` · ${esc(where)}` : ''}${
+      pos ? ` · ${num(pos.lat, 5)}, ${num(pos.lon, 5)}${
+        pos.fromCatalogue ? ' (from the site catalogue)' : ''}` : ''}</div>
 
-    <div class="profile-wrap">${siteProfileSvg(row.ds)}</div>
+    ${dived ? `<div class="profile-wrap">${siteProfileSvg(row.ds)}</div>`
+            : `<div class="profile-wrap"><div class="empty">
+                 No dives logged here, so there is no profile to draw.
+               </div></div>`}
 
     <div class="tiles">
       ${tiles.map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('')}
     </div>
 
-    <h3>Dives here</h3>
+    ${entry && entry.notes ? `<h3>About this site</h3>
+      <div class="note" style="margin:0">${esc(entry.notes)}</div>` : ''}
+    ${entry && entry.source ? `<div class="note" style="margin-top:6px">
+      <a href="${esc(entry.source)}" target="_blank" rel="noopener">source</a></div>` : ''}
+
+    ${dived ? `<h3>Dives here</h3>
     <table>
       <tr><th>Date</th><th>Max depth</th><th>Duration</th><th>Water</th></tr>
       ${[...row.ds].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((d) => `
         <tr><td>${prettyDate(d.date)}</td><td>${num(d.maxdepth)} m</td>
         <td>${duration(d.duration)}</td>
         <td>${d.temp_min != null ? num(d.temp_min) + ' °C' : '–'}</td></tr>`).join('')}
-    </table>`;
+    </table>` : ''}
+
+    ${pos ? `<div class="note">
+      <a href="https://www.openstreetmap.org/?mlat=${pos.lat}&mlon=${pos.lon}#map=14/${pos.lat}/${pos.lon}"
+         target="_blank" rel="noopener">open in OpenStreetMap</a></div>` : ''}`;
 
   switchTab('site');
 }
@@ -1207,7 +1260,8 @@ async function renderMap() {
     }).addTo(divedLayer).bindPopup(
       `<strong>${esc(site.name || 'Unnamed site')}</strong><br>` +
       `${site.dives.length} dive${site.dives.length === 1 ? '' : 's'} logged<br>` +
-      `deepest ${deepest.toFixed(1)} m`);
+      `deepest ${deepest.toFixed(1)} m` +
+      (site.name ? `<br>${sitePopupLink(site.name, 'Stats & temperature profile →')}` : ''));
     points.push([site.lat, site.lon]);
   }
 
@@ -1265,9 +1319,19 @@ function drawCatalogueMarkers() {
       `${esc(where) || '&nbsp;'}` +
       (site.notes ? `<br><span style="display:block;max-width:260px;margin-top:4px">${esc(site.notes)}</span>` : '') +
       (site.source ? `<br><a href="${esc(site.source)}" target="_blank" rel="noopener">source</a>` : '') +
-      `<br><span style="color:#8fb0c8">${site.lat.toFixed(4)}, ${site.lon.toFixed(4)}</span>`);
+      `<br><span style="color:#8fb0c8">${site.lat.toFixed(4)}, ${site.lon.toFixed(4)}</span>` +
+      `<br>${sitePopupLink(site.name, 'Stats & temperature profile →')}`);
   }
   updateCatalogueCount(drawn, inView, tally);
+}
+
+/**
+ * A link inside a Leaflet popup that opens the site view. Popups are inserted
+ * into the DOM by Leaflet after this HTML is built, so the click is caught by
+ * delegation on the document rather than a listener bound here.
+ */
+function sitePopupLink(name, label) {
+  return `<a href="#" class="site-link" data-site-name="${esc(name)}">${esc(label)}</a>`;
 }
 
 function updateCatalogueCount(drawn, inView, tally = {}) {
@@ -1404,6 +1468,14 @@ document.getElementById('btn-site-back').addEventListener('click', () => switchT
 document.getElementById('cat-toggle').addEventListener('change', (e) => {
   showCatalogue = e.target.checked;
   drawCatalogueMarkers();
+});
+
+// Popup links are created by Leaflet long after load, so delegate.
+document.addEventListener('click', (e) => {
+  const link = e.target.closest && e.target.closest('.site-link');
+  if (!link) return;
+  e.preventDefault();
+  openSiteByName(link.dataset.siteName);
 });
 
 document.getElementById('svc-toggle').addEventListener('change', (e) => {
