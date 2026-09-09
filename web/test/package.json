@@ -3,7 +3,7 @@
   "private": true,
   "description": "Runs web/index.html in jsdom against a stubbed Supabase.",
   "scripts": {
-    "test": "node ui.test.js && node refresh.test.js"
+    "test": "node ui.test.js && node refresh.test.js && node map.test.js && node assign.test.js"
   },
   "devDependencies": {
     "jsdom": "^24.0.0"

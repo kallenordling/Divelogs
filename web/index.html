@@ -142,6 +142,33 @@
 
   .empty { color: var(--dim); text-align: center; padding: 48px 20px; }
 
+  /* ── Modal ─────────────────────────────────────────────────────────── */
+  .modal {
+    position: fixed; inset: 0; z-index: 1000; background: rgba(4, 12, 20, .78);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .modal-box {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    width: 100%; max-width: 520px; max-height: 86vh; display: flex; flex-direction: column;
+    padding: 18px;
+  }
+  .modal-box h3 { margin: 0 0 12px; color: var(--text); font-size: 17px;
+                  text-transform: none; letter-spacing: 0; }
+  .pick-list { overflow-y: auto; flex: 1; margin: 12px -6px 0; min-height: 120px; }
+  .pick-row { padding: 10px 12px; border-radius: 8px; cursor: pointer; }
+  .pick-row:hover { background: var(--card-hi); }
+  .pick-row .n { font-weight: 600; }
+  .pick-row .s { color: var(--dim); font-size: 12px; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+
+  /* ── Selection mode ────────────────────────────────────────────────── */
+  .dive-card.picked { border-color: var(--accent); background: var(--card-hi); }
+  .selbar {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: var(--card); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px;
+  }
+  .selbar .grow { flex: 1; color: var(--muted); font-size: 14px; }
+
   .note { color: var(--dim); font-size: 12px; margin-top: 20px; line-height: 1.6; }
 
   @media (max-width: 560px) {
@@ -193,8 +220,10 @@
     <section id="tab-dives">
       <div class="toolbar">
         <input id="search" type="search" placeholder="Search by site, date or computer…">
+        <button class="ghost" id="btn-select">Set sites…</button>
         <button class="ghost" id="btn-refresh">Refresh</button>
       </div>
+      <div id="selbar-host"></div>
       <div class="dive-grid" id="dive-list"></div>
     </section>
 
@@ -229,6 +258,8 @@
     </section>
   </main>
 </div>
+
+<div id="modal-host"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -312,23 +343,38 @@ async function refreshSession() {
 
 // ── REST ───────────────────────────────────────────────────────────────────
 
-async function rest(path, { retry = true } = {}) {
+async function rest(path, { retry = true, method = 'GET', body = null, prefer = null } = {}) {
+  const headers = {
+    apikey: ANON_KEY,
+    Authorization: `Bearer ${session.access_token}`,
+    Accept: 'application/json',
+  };
+  if (body) headers['Content-Type'] = 'application/json';
+  if (prefer) headers.Prefer = prefer;
+
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    headers: {
-      apikey: ANON_KEY,
-      Authorization: `Bearer ${session.access_token}`,
-      Accept: 'application/json',
-    },
+    method, headers,
+    body: body ? JSON.stringify(body) : undefined,
   });
 
   // Access tokens are short-lived; swap in a fresh one and try once more.
   if (res.status === 401 && retry) {
-    if (await refreshSession()) return rest(path, { retry: false });
+    if (await refreshSession()) return rest(path, { retry: false, method, body, prefer });
     signOut();
     throw new Error('Session expired — please sign in again');
   }
-  if (!res.ok) throw new Error(`Request failed (${res.status})`);
-  return res.json();
+  if (res.status === 403) {
+    // Almost always a row-level-security policy refusing the write.
+    throw new Error('The database refused that change (403). The dives table ' +
+                    'likely has no update policy for your account.');
+  }
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).message || ''; } catch { /* no body */ }
+    throw new Error(`Request failed (${res.status})${detail ? ': ' + detail : ''}`);
+  }
+  if (res.status === 204) return null;
+  return res.json().catch(() => null);
 }
 
 const fetchDives = () =>
@@ -445,8 +491,57 @@ function renderList() {
       </div>
     </div>`).join('');
 
+  // In selection mode a tap picks the dive instead of opening it.
   list.querySelectorAll('.dive-card').forEach((el) => {
-    el.addEventListener('click', () => showDetail(dives[+el.dataset.idx], order));
+    const d = dives[+el.dataset.idx];
+    if (selecting && d.id != null && selected.has(d.id)) el.classList.add('picked');
+    el.addEventListener('click', () => {
+      if (!selecting) return showDetail(d, order);
+      if (d.id == null) return;
+      selected.has(d.id) ? selected.delete(d.id) : selected.add(d.id);
+      el.classList.toggle('picked');
+      drawSelBar();
+    });
+  });
+  drawSelBar();
+}
+
+/** The bar shown while picking dives to set a site on. */
+function drawSelBar() {
+  const host = document.getElementById('selbar-host');
+  if (!selecting) { host.innerHTML = ''; return; }
+
+  const n = selected.size;
+  host.innerHTML = `
+    <div class="selbar">
+      <span class="grow">${n ? `${n} dive${n === 1 ? '' : 's'} selected` : 'Tap dives to select them'}</span>
+      <button class="ghost" id="sel-none">Without a site</button>
+      <button class="ghost" id="sel-cancel">Cancel</button>
+      <button id="sel-apply"${n ? '' : ' disabled'}>Set site…</button>
+    </div>`;
+
+  document.getElementById('sel-cancel').addEventListener('click', () => {
+    selecting = false; selected.clear(); renderList();
+  });
+  // Selecting every dive that has no site is the usual case by far.
+  document.getElementById('sel-none').addEventListener('click', () => {
+    selected.clear();
+    for (const d of dives) if (d.id != null && !(d.site_name || '').trim()) selected.add(d.id);
+    renderList();
+  });
+  document.getElementById('sel-apply').addEventListener('click', () => {
+    const targets = dives.filter((d) => selected.has(d.id));
+    if (!targets.length) return;
+    assignSite(targets, (count, site) => {
+      selecting = false; selected.clear();
+      renderList();
+      document.getElementById('selbar-host').innerHTML =
+        `<div class="note" style="margin:0 0 12px;color:var(--ok)">
+           Set “${esc(site.name)}” on ${count} dive${count === 1 ? '' : 's'}.
+           ${site.lat == null ? 'No coordinates given, so it will not appear on the map.'
+                              : 'They will now show on the Map and Sites tabs.'}
+         </div>`;
+    });
   });
 }
 
@@ -531,6 +626,128 @@ function profileSvg(samples) {
       <span><i style="background:#4fc3f7"></i>Depth (m)</span>
       ${hasTemp ? '<span><i style="background:#ffb74d"></i>Temperature (°C)</span>' : ''}
     </div>`;
+}
+
+// ── Assigning a site to dives ──────────────────────────────────────────────
+// The phone app only records a site when you pick one by hand, so most dives
+// arrive with no site_name and nothing to place them by. These let you set one
+// here instead, writing it straight back to the dive rows.
+
+let selecting = false;
+const selected = new Set();      // dive.id
+
+/** Writes name and coordinates onto the given dives. */
+async function applySiteTo(targets, site) {
+  const fields = {
+    site_name: site.name,
+    site_lat: site.lat == null ? null : Number(site.lat),
+    site_lon: site.lon == null ? null : Number(site.lon),
+  };
+
+  let done = 0;
+  for (const d of targets) {
+    if (d.id == null) throw new Error('This dive has no id, so it cannot be updated');
+    await rest(`dives?id=eq.${encodeURIComponent(d.id)}`, {
+      method: 'PATCH', body: fields, prefer: 'return=minimal',
+    });
+    Object.assign(d, fields);    // keep the local copy in step
+    done++;
+  }
+  return done;
+}
+
+function closeModal() { document.getElementById('modal-host').innerHTML = ''; }
+
+/**
+ * Search the bundled catalogue, or type a name and optional coordinates for a
+ * site that is not in it.
+ */
+async function openSitePicker(count, onChoose) {
+  await loadCatalogue();
+  const entries = [];
+  try {
+    const res = await fetch('dive_sites.json');
+    if (res.ok) entries.push(...((await res.json()).sites || []));
+  } catch { /* fall back to manual entry */ }
+
+  const host = document.getElementById('modal-host');
+  host.innerHTML = `
+    <div class="modal" id="site-modal">
+      <div class="modal-box">
+        <h3>Set the site for ${count} dive${count === 1 ? '' : 's'}</h3>
+        <input id="pick-q" type="search" placeholder="Search ${entries.length} known sites…">
+        <div class="pick-list" id="pick-list"></div>
+        <details style="margin-top:12px">
+          <summary style="cursor:pointer;color:var(--muted);font-size:13px">Not listed? Enter it yourself</summary>
+          <div style="margin-top:10px;display:grid;gap:8px">
+            <input id="pick-name" placeholder="Site name">
+            <div style="display:flex;gap:8px">
+              <input id="pick-lat" placeholder="Latitude (optional)" inputmode="decimal">
+              <input id="pick-lon" placeholder="Longitude (optional)" inputmode="decimal">
+            </div>
+            <button id="pick-custom">Use this site</button>
+          </div>
+        </details>
+        <div class="modal-actions"><button class="ghost" id="pick-cancel">Cancel</button></div>
+      </div>
+    </div>`;
+
+  const list = document.getElementById('pick-list');
+  const draw = (q) => {
+    const f = foldName(q);
+    const hits = (f ? entries.filter((e) => foldName(e.name).includes(f) ||
+                                            foldName(e.country || '').includes(f))
+                    : entries).slice(0, 150);
+    list.innerHTML = hits.length
+      ? hits.map((e, i) => `
+          <div class="pick-row" data-i="${i}">
+            <div class="n">${esc(e.name)}</div>
+            <div class="s">${esc([e.country, e.region, e.desc].filter(Boolean).join(' · ')
+                              || `${e.lat.toFixed(4)}, ${e.lon.toFixed(4)}`)}</div>
+          </div>`).join('')
+      : '<div class="empty" style="padding:24px">No match — use “Not listed?” below.</div>';
+    list.querySelectorAll('.pick-row').forEach((row) => {
+      row.addEventListener('click', () => {
+        const e = hits[+row.dataset.i];
+        closeModal();
+        onChoose({ name: e.name, lat: e.lat, lon: e.lon });
+      });
+    });
+  };
+  draw('');
+
+  document.getElementById('pick-q').addEventListener('input', (ev) => draw(ev.target.value));
+  document.getElementById('pick-cancel').addEventListener('click', closeModal);
+  document.getElementById('site-modal').addEventListener('click', (ev) => {
+    if (ev.target.id === 'site-modal') closeModal();
+  });
+  document.getElementById('pick-custom').addEventListener('click', () => {
+    const name = document.getElementById('pick-name').value.trim();
+    if (!name) return;
+    const lat = parseFloat(document.getElementById('pick-lat').value);
+    const lon = parseFloat(document.getElementById('pick-lon').value);
+    closeModal();
+    onChoose({ name, lat: isFinite(lat) ? lat : null, lon: isFinite(lon) ? lon : null });
+  });
+}
+
+/** Runs the picker for some dives and reports the outcome. */
+function assignSite(targets, after) {
+  openSitePicker(targets.length, async (site) => {
+    const list = document.getElementById('dive-list');
+    try {
+      const n = await applySiteTo(targets, site);
+      if (after) after(n, site);
+      else renderList();
+      // Anything cached from the old data is now stale.
+      catalogue && catalogue.set(foldName(site.name),
+        site.lat != null ? { lat: site.lat, lon: site.lon } : undefined);
+    } catch (e) {
+      if (list) list.insertAdjacentHTML('beforebegin',
+        `<div class="note" style="color:var(--bad)">${esc(e.message)}</div>`);
+      else alert(e.message);
+    }
+  });
 }
 
 // ── Temperature-coloured site profile ──────────────────────────────────────
@@ -803,12 +1020,21 @@ function showDetail(d, order) {
         }).join('')}
       </table>` : ''}
 
+    <h3>Dive site</h3>
+    <div class="note" style="margin:0 0 10px">${
+      d.site_name ? esc(d.site_name) : 'No site set for this dive.'}</div>
+    <button class="ghost" id="btn-set-site">${d.site_name ? 'Change site' : 'Set dive site'}</button>
+
     ${(d.site_lat != null && d.site_lon != null) ? `
       <h3>Location</h3>
       <div class="note">${num(d.site_lat, 5)}, ${num(d.site_lon, 5)}
         — <a href="https://www.openstreetmap.org/?mlat=${d.site_lat}&mlon=${d.site_lon}#map=13/${d.site_lat}/${d.site_lon}"
              target="_blank" rel="noopener">open in OpenStreetMap</a></div>` : ''}
   `;
+  const setBtn = document.getElementById('btn-set-site');
+  if (setBtn) {
+    setBtn.addEventListener('click', () => assignSite([d], () => showDetail(d, order)));
+  }
   switchTab('detail');
 }
 
@@ -999,6 +1225,11 @@ document.getElementById('btn-signin').addEventListener('click', handleSignIn);
 document.getElementById('btn-signup').addEventListener('click', handleSignUp);
 document.getElementById('btn-signout').addEventListener('click', signOut);
 document.getElementById('btn-refresh').addEventListener('click', reload);
+document.getElementById('btn-select').addEventListener('click', () => {
+  selecting = !selecting;
+  selected.clear();
+  renderList();
+});
 document.getElementById('btn-back').addEventListener('click', () => switchTab('dives'));
 document.getElementById('btn-site-back').addEventListener('click', () => switchTab('sites'));
 document.getElementById('search').addEventListener('input', renderList);

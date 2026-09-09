@@ -23,6 +23,22 @@ uploaded from the phone show up here straight away.
   coloured by the water temperature recorded at that point
 - Map of your dive sites (Leaflet + OpenStreetMap tiles)
 
+### Setting dive sites
+
+The phone app only records a site when you pick one by hand, so most dives
+arrive with `site_name` null and nothing to place them by. You can set sites
+here instead:
+
+- **Dive log → Set sites…** → *Without a site* selects every dive missing one,
+  then *Set site…* applies one site to all of them at once
+- or open a single dive and use **Set dive site**
+
+Either way you search the bundled catalogue, or type a name and optional
+coordinates for somewhere that is not in it. The change is written straight
+back to the dive rows, so the phone app sees it too. This needs an `update`
+row-level-security policy on `dives`; without one the write is refused with a
+403 and the page says so.
+
 ### Why the map may look empty
 
 The phone app only stores coordinates on a dive when its site name matched a
