@@ -109,8 +109,8 @@ still opens with the network switched off.
 It is a static file. Any host will do:
 
 ```bash
-# GitHub Pages: serve the web/ directory from your default branch,
-# then open https://<user>.github.io/<repo>/
+# GitHub Pages: .github/workflows/pages.yml publishes this directory as the
+# site root on every push, so the app is at https://<user>.github.io/<repo>/
 
 # Or locally:
 cd web && python3 -m http.server 8080   # http://localhost:8080

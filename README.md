@@ -47,7 +47,7 @@ gitignores. Locally they are already present.
 
 Plain HTML, CSS and JavaScript — no framework and no build step. Deployed
 free on GitHub Pages at
-**<https://kallenordling.github.io/Divelogs/web/>**, and installable to the
+**<https://kallenordling.github.io/Divelogs/>**, and installable to the
 home screen on both Android and iPhone. See [`web/README.md`](web/README.md)
 for the layout, the tests, and the row-level-security policies worth
 confirming before sharing the URL.
@@ -82,6 +82,7 @@ missing.
 | `build.yml` — Android APK | every push | `deeplog-apk` |
 | `build.yml` — Web tests | every push | the web suites and the installable-app check |
 | `ios.yml` — iOS app | on demand, and on `mobile/**` | a Simulator build and an unsigned `.ipa` |
+| `pages.yml` — Deploy site | on `web/**` | publishes `web/` as the site root |
 
 Run the iOS build with `gh workflow run ios.yml`. Neither iOS artifact installs
 on a device as-is; see [`mobile/README.md`](mobile/README.md) for why, and what

@@ -1,0 +1,102 @@
+name: Deploy site
+
+# Publishes web/ as the site root, so https://<user>.github.io/Divelogs/ is
+# the app itself.
+#
+# The previous setup served the whole repository from the branch root, which
+# put the old 2026 prototype at the front door and exposed the source tree
+# alongside it. Building the artifact here publishes only what belongs on the
+# web.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; queue instead, and do not cancel one that is
+# already publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          rm -rf _site && mkdir _site
+
+          # web/ becomes the site root. The test harness is not part of it.
+          cp -r web/. _site/
+          rm -rf _site/test _site/README.md
+
+          # The app used to live at /web/. Keep those links working, and
+          # unregister the service worker that was installed under that scope
+          # — left alone it would keep serving the old copy from its cache.
+          mkdir -p _site/web
+          cat > _site/web/index.html <<'HTML'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>DeepLog</title>
+            <meta name="robots" content="noindex">
+            <meta http-equiv="refresh" content="0; url=../">
+            <style>
+              body { background:#07141F; color:#9DB6C4; font-family:system-ui,sans-serif;
+                     display:grid; place-items:center; height:100vh; margin:0; }
+              a { color:#39C6E8; }
+            </style>
+          </head>
+          <body>
+            <p>DeepLog has moved to <a href="../">the top level</a>…</p>
+            <script>
+              (async () => {
+                try {
+                  if ('serviceWorker' in navigator) {
+                    const regs = await navigator.serviceWorker.getRegistrations();
+                    await Promise.all(regs
+                      .filter((r) => r.scope.includes('/web/'))
+                      .map((r) => r.unregister()));
+                  }
+                } catch (e) { /* nothing to clean up */ }
+                location.replace('../');
+              })();
+            </script>
+          </body>
+          </html>
+          HTML
+
+          # A blank page caused by a missing shell file is not worth shipping.
+          for f in index.html css/app.css js/app.js js/views.js manifest.webmanifest \
+                   sw.js dive_sites.json finnish_sites.json icons/icon-512.png; do
+            test -s "_site/$f" || { echo "missing from the site: $f"; exit 1; }
+            echo "  ok  $f"
+          done
+          echo "site size: $(du -sh _site | cut -f1)"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
