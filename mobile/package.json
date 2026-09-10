@@ -1,0 +1,17 @@
+{
+  "name": "deeplog-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Capacitor shells that package the DeepLog web app for iOS and Android.",
+  "scripts": {
+    "prepare:web": "node scripts/copy-web.js",
+    "sync": "npm run prepare:web && cap sync"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/ios": "^6.2.0"
+  }
+}

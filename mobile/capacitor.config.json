@@ -1,0 +1,15 @@
+{
+  "appId": "fi.deeplog.journal",
+  "appName": "DeepLog",
+  "webDir": "www",
+  "backgroundColor": "#07141F",
+  "ios": {
+    "contentInset": "always",
+    "backgroundColor": "#07141F",
+    "limitsNavigationsToAppBoundDomains": false
+  },
+  "server": {
+    "androidScheme": "https",
+    "iosScheme": "capacitor"
+  }
+}

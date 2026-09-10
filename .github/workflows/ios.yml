@@ -1,0 +1,172 @@
+name: iOS app
+
+# An iOS build needs macOS and Xcode. GitHub's macOS runners are free and
+# unmetered on public repositories, so this is the Mac — there is no need for
+# one locally.
+#
+# Runs on demand rather than on every push: the job takes several minutes and
+# the web app it wraps is already tested by the main workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      simulator_only:
+        description: 'Skip the unsigned .ipa and build only for the Simulator'
+        type: boolean
+        default: false
+  push:
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/ios.yml'
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned iOS app
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Show toolchain
+        run: |
+          echo "Xcode: $(xcodebuild -version | head -1)"
+          echo "Node:  $(node --version)"
+          xcodebuild -showsdks | grep -i iphone || true
+
+      - name: Install Capacitor
+        working-directory: mobile
+        run: npm install --no-audit --no-fund
+
+      - name: Stage the web app
+        working-directory: mobile
+        run: npm run prepare:web
+
+      - name: Generate the Xcode project
+        working-directory: mobile
+        # The native project is generated rather than committed, so it always
+        # matches capacitor.config.json and there is no vendored tree to rot.
+        run: |
+          npx cap add ios
+          npx cap sync ios
+
+      - name: Show what will be built
+        working-directory: mobile/ios/App
+        run: xcodebuild -list -workspace App.xcworkspace
+
+      - name: Build for the Simulator
+        working-directory: mobile/ios/App
+        # No signing identity exists on a runner, so signing is switched off.
+        # A Simulator build never needs one.
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | xcbeautify || xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Check the web assets reached the bundle
+        working-directory: mobile/ios/App
+        # A Capacitor app that builds but ships an empty public/ opens to a
+        # blank screen, which the build itself will not catch.
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products -maxdepth 2 -name 'App.app' -type d | head -1)
+          test -n "$APP" || { echo "No App.app produced"; exit 1; }
+          echo "Bundle: $APP"
+          for f in public/index.html public/js/app.js public/css/app.css public/dive_sites.json; do
+            test -s "$APP/$f" || { echo "missing from bundle: $f"; exit 1; }
+            echo "  ok  $f"
+          done
+
+      - name: Package the Simulator app
+        working-directory: mobile/ios/App
+        run: |
+          APP=$(find build/Build/Products -maxdepth 2 -name 'App.app' -type d | head -1)
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" \
+                "$GITHUB_WORKSPACE/artifacts/DeepLog-simulator.zip"
+
+      - name: Archive and export an unsigned .ipa
+        if: ${{ inputs.simulator_only != true }}
+        working-directory: mobile/ios/App
+        # Archiving for a device with signing disabled produces an .app that
+        # is not installable as-is; wrapping it in a Payload/ folder is the
+        # standard way to hand out an unsigned .ipa for later re-signing.
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/App.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive
+
+          APP=$(find build/App.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP" || { echo "No .app inside the archive"; exit 1; }
+
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          zip -qry "$GITHUB_WORKSPACE/artifacts/DeepLog-unsigned.ipa" Payload
+          echo "Unsigned ipa: $(du -h "$GITHUB_WORKSPACE/artifacts/DeepLog-unsigned.ipa" | cut -f1)"
+
+      - name: Upload the Simulator build
+        uses: actions/upload-artifact@v4
+        with:
+          name: deeplog-ios-simulator
+          path: artifacts/DeepLog-simulator.zip
+          retention-days: 30
+
+      - name: Upload the unsigned ipa
+        if: ${{ inputs.simulator_only != true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: deeplog-ios-unsigned
+          path: artifacts/DeepLog-unsigned.ipa
+          retention-days: 30
+
+      - name: How to install this
+        if: always()
+        run: |
+          cat <<'NOTE'
+          ────────────────────────────────────────────────────────────────
+          These builds are unsigned, so iOS will not install them directly.
+
+            Simulator   unzip DeepLog-simulator.zip and drag App.app onto a
+                        running Simulator, or:
+                        xcrun simctl install booted App.app
+
+            iPhone      re-sign DeepLog-unsigned.ipa with a free Apple ID
+                        using AltStore or Sideloadly (7-day certificates),
+                        or add a Developer Program certificate as a secret
+                        and sign here.
+          ────────────────────────────────────────────────────────────────
+          NOTE
