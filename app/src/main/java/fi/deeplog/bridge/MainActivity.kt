@@ -979,7 +979,10 @@ class MainActivity : AppCompatActivity() {
             statCard("DIVE SITES VISITED",  "$locations", "Based on assigned site tags")
     }
 
-    override fun onDestroy() { super.onDestroy(); scope.cancel(); bleTransport?.close() }
+    override fun onDestroy() {
+        super.onDestroy(); scope.cancel(); bleTransport?.close()
+        if (instance === this) instance = null
+    }
 
     // ── BLE scan ──────────────────────────────────────────────────────────────
 
@@ -1209,6 +1212,9 @@ class MainActivity : AppCompatActivity() {
     private fun explainUploadError(message: String?): String {
         val m = message ?: return "unknown error"
         return when {
+            m.contains("DUPLICATE:") ->
+                "the database already holds a dive at that date and minute, so it kept that one"
+
             m.startsWith("HTTP 401") -> "sign-in expired; sign in again"
             m.startsWith("HTTP 403") || m.contains("row-level security", ignoreCase = true) ->
                 "the database refused it (it needs an insert policy on dives)"
@@ -2223,6 +2229,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun status(msg: String) { Log.i(TAG, msg); tvStatus.text = msg }
+    // Held until onDestroy, not onStop: a download keeps running when the app
+    // goes to the background, and every dive, progress and fingerprint callback
+    // goes through `instance`. Clearing it in onStop silently dropped each dive
+    // that arrived while the user was in another app.
     override fun onStart()  { super.onStart();  instance = this }
-    override fun onStop()   { super.onStop();   instance = null }
 }

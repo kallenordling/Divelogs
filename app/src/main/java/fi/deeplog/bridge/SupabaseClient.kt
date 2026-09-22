@@ -148,11 +148,22 @@ object SupabaseClient {
                 siteLon ?.let { put("site_lon",  it) }
                 put("samples", compactSamples)
             }
-            authed {
+            // Ask for the stored row back. With ignore-duplicates a row that
+            // clashes with a unique constraint is dropped and the request still
+            // succeeds; with return=minimal that looked exactly like a save, so
+            // the dive was counted as uploaded and never appeared. An empty
+            // array is that case, and is now reported as one.
+            val stored = authed {
                 postRest("/rest/v1/dives", obj.toString(),
-                    extraHeaders = mapOf("Prefer" to "resolution=ignore-duplicates,return=minimal"))
+                    extraHeaders = mapOf("Prefer" to "resolution=ignore-duplicates,return=representation"))
             }
-        }.onFailure { Log.e(STAG, "uploadDive: $it") }
+            val rows = runCatching { JSONArray(stored.ifBlank { "[]" }).length() }.getOrDefault(-1)
+            if (rows == 0) {
+                throw IllegalStateException(
+                    "DUPLICATE: the database already has a dive on ${dive.date} at ${dive.time} " +
+                    "and discarded this one")
+            }
+        }.onFailure { Log.e(STAG, "uploadDive ${dive.date} ${dive.time} ${dive.maxdepth}m: $it") }
     }
 
     // ── All user dives ────────────────────────────────────────────────────────
@@ -227,12 +238,12 @@ object SupabaseClient {
         return JSONObject(readResponse(conn))
     }
 
-    private fun postRest(path: String, body: String, extraHeaders: Map<String, String> = emptyMap()) {
+    private fun postRest(path: String, body: String, extraHeaders: Map<String, String> = emptyMap()): String {
         val conn = open(path, "POST", useAuth = true)
         extraHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
         conn.doOutput = true
         conn.outputStream.write(body.toByteArray())
-        readResponse(conn)  // throws on error
+        return readResponse(conn)  // throws on error
     }
 
     private fun getArray(path: String): JSONArray {
