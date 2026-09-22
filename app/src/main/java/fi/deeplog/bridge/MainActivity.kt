@@ -719,19 +719,21 @@ class MainActivity : AppCompatActivity() {
                 diveToSite[key] = siteName
             }
             // Rows whose site exists only on this phone, to push up below.
-            val unsynced = mutableListOf<Triple<Long, String, String>>()   // id, key, site
+            val unsynced = mutableListOf<Triple<String, String, String>>()   // id, key, site
             rowIdByKey.clear()
             for (row in rows) {
                 val key = diveKey(row.optString("date"), row.optString("time"))
-                val id = row.optLong("id", -1L)
-                if (id >= 0) rowIdByKey[key] = id
+                // Ids are UUIDs. Reading them as numbers turned every one into
+                // "0", so each site change was sent as an update of dive 0.
+                val id = row.optString("id", "").takeIf { it.isNotEmpty() && it != "null" }
+                if (id != null) rowIdByKey[key] = id
 
                 val cloudSite = row.optString("site_name", "").takeIf { it.isNotEmpty() && it != "null" }
                 if (cloudSite != null) {
                     diveToSite[key] = cloudSite
                 } else {
                     val local = diveToSite[key]
-                    if (local != null && id >= 0) unsynced.add(Triple(id, key, local))
+                    if (local != null && id != null) unsynced.add(Triple(id, key, local))
                 }
             }
             status("Loaded ${dives.size} dive(s) from cloud.")
@@ -747,7 +749,7 @@ class MainActivity : AppCompatActivity() {
     private fun diveKey(date: String, time: String) = "${date}_${time.take(5)}"
 
     /** Database row id for each dive, from the last cloud load. */
-    private val rowIdByKey = HashMap<String, Long>()
+    private val rowIdByKey = HashMap<String, String>()
 
     /**
      * Pushes sites that were set on this phone but never reached the database.
@@ -756,7 +758,7 @@ class MainActivity : AppCompatActivity() {
      * site views — which read the database, here and on the web — showed no
      * dives at any site. This carries the existing assignments across once.
      */
-    private fun syncLocalSites(pending: List<Triple<Long, String, String>>) {
+    private fun syncLocalSites(pending: List<Triple<String, String, String>>) {
         scope.launch {
             var updated = 0; var refused = 0; var failed = 0
             val sites = loadSites()

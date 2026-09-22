@@ -279,7 +279,7 @@ object SupabaseClient {
      *   answers 200, so the caller must treat 0 as "refused".
      */
     suspend fun updateDiveSite(
-        rowId: Long?, date: String, time: String,
+        rowId: String?, date: String, time: String,
         siteName: String, lat: Double?, lon: Double?
     ): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
@@ -290,16 +290,16 @@ object SupabaseClient {
                 // Only overwrite a position we actually know.
                 if (lat != null && lon != null) { put("site_lat", lat); put("site_lon", lon) }
             }
-            authed { patchRest("/rest/v1/dives?id=eq.$id", body.toString()) }.length()
+            authed { patchRest("/rest/v1/dives?id=eq.${URLEncoder.encode(id, "UTF-8")}", body.toString()) }.length()
         }.onFailure { Log.e(STAG, "updateDiveSite: $it") }
     }
 
-    private fun findDiveId(date: String, time: String): Long? {
+    private fun findDiveId(date: String, time: String): String? {
         val minute = time.take(5)
         val rows = getArray("/rest/v1/dives?select=id,time&date=eq.${URLEncoder.encode(date, "UTF-8")}")
         for (i in 0 until rows.length()) {
             val r = rows.getJSONObject(i)
-            if (r.optString("time").take(5) == minute) return r.optLong("id")
+            if (r.optString("time").take(5) == minute) return r.optString("id").takeIf { it.isNotEmpty() }
         }
         return null
     }
