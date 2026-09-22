@@ -848,10 +848,12 @@ Java_fi_deeplog_bridge_DcBridge_download(
     dc_context_t* ctx = nullptr;
     dc_context_new(&ctx);
 
-    // INFO rather than DEBUG: the Shearwater driver hexdumps every manifest
-    // page at DEBUG, which would drown the lines worth reading.
+    // WARNING, not INFO: at INFO libdivecomputer hex-dumps every Bluetooth
+    // packet (seen on a real Perdix download — thousands of lines). Errors,
+    // refusals and skipped dives are all WARNING or above, so nothing that
+    // explains a failed download is lost.
     LibdcLog libdcLog;
-    dc_context_set_loglevel(ctx, DC_LOGLEVEL_INFO);
+    dc_context_set_loglevel(ctx, DC_LOGLEVEL_WARNING);
     dc_context_set_logfunc(ctx, libdc_log, &libdcLog);
 
     dc_descriptor_t* descriptor =

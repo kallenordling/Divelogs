@@ -462,6 +462,22 @@ class DiveAdapter(private val onClick: (DiveEntry) -> Unit) :
     }
 
     @SuppressLint("NotifyDataSetChanged")
+    /**
+     * Clears the "new" flag on dives that reached the database. Before this the
+     * flag was never cleared, so every later sync re-sent every dive downloaded
+     * this session — and a failed one was indistinguishable from a sent one.
+     */
+    fun markUploaded(done: Collection<DiveEntry>) {
+        val keys = done.map { "${it.date}_${it.time}" }.toHashSet()
+        for (list in listOf(allItems, items)) {
+            for (i in list.indices) {
+                val d = list[i]
+                if (d.isNew && "${d.date}_${d.time}" in keys) list[i] = d.copy(isNew = false)
+            }
+        }
+        notifyDataSetChanged()
+    }
+
     fun filter(query: String) {
         items.clear()
         val q = query.trim().lowercase()
@@ -659,6 +675,9 @@ class MainActivity : AppCompatActivity() {
         loadDiveSiteAssociations()
         System.loadLibrary("deeplog")
         restoreSupabaseSession()
+        // Keep the stored session current whenever a request refreshes it, or
+        // the next launch would start from a revoked refresh token.
+        SupabaseClient.onSessionRefreshed = { persistSupabaseSession() }
 
         scope.launch {
             val loggedIn = when {
@@ -694,12 +713,67 @@ class MainActivity : AppCompatActivity() {
                 val siteName = diveToSite[key] ?: continue
                 diveToSite[key] = siteName
             }
+            // Rows whose site exists only on this phone, to push up below.
+            val unsynced = mutableListOf<Triple<Long, String, String>>()   // id, key, site
+            rowIdByKey.clear()
             for (row in rows) {
-                val siteName = row.optString("site_name", "").takeIf { it.isNotEmpty() } ?: continue
-                val key = "${row.optString("date")}_${row.optString("time")}"
-                diveToSite[key] = siteName
+                val key = diveKey(row.optString("date"), row.optString("time"))
+                val id = row.optLong("id", -1L)
+                if (id >= 0) rowIdByKey[key] = id
+
+                val cloudSite = row.optString("site_name", "").takeIf { it.isNotEmpty() && it != "null" }
+                if (cloudSite != null) {
+                    diveToSite[key] = cloudSite
+                } else {
+                    val local = diveToSite[key]
+                    if (local != null && id >= 0) unsynced.add(Triple(id, key, local))
+                }
             }
             status("Loaded ${dives.size} dive(s) from cloud.")
+            if (unsynced.isNotEmpty()) syncLocalSites(unsynced)
+        }
+    }
+
+    /**
+     * Dives are keyed "YYYY-MM-DD_HH:MM". The database may return time as
+     * "HH:MM:SS", which never matched the phone's keys — so a site stored on
+     * one side was invisible to the other even for the same dive.
+     */
+    private fun diveKey(date: String, time: String) = "${date}_${time.take(5)}"
+
+    /** Database row id for each dive, from the last cloud load. */
+    private val rowIdByKey = HashMap<String, Long>()
+
+    /**
+     * Pushes sites that were set on this phone but never reached the database.
+     *
+     * Until now, choosing a site for a dive only saved it on the phone, so the
+     * site views — which read the database, here and on the web — showed no
+     * dives at any site. This carries the existing assignments across once.
+     */
+    private fun syncLocalSites(pending: List<Triple<Long, String, String>>) {
+        scope.launch {
+            var updated = 0; var refused = 0; var failed = 0
+            val sites = loadSites()
+            for ((id, _, siteName) in pending) {
+                val pos = sites.find { it.name == siteName }
+                SupabaseClient.updateDiveSite(id, "", "", siteName, pos?.lat, pos?.lon)
+                    .onSuccess { n -> if (n > 0) updated++ else refused++ }
+                    .onFailure { failed++ }
+            }
+            Log.i(TAG, "Site sync: ${pending.size} pending, $updated updated, " +
+                       "$refused refused (0 rows), $failed failed")
+            withContext(Dispatchers.Main) {
+                status(when {
+                    refused + failed == 0 ->
+                        "Saved the dive site on $updated dive(s) to the cloud."
+                    refused > 0 && updated == 0 ->
+                        "Couldn't save dive sites to the cloud: the database accepted " +
+                        "the request but changed nothing — it needs an update policy on dives."
+                    else ->
+                        "Saved dive sites on $updated dive(s); ${refused + failed} could not be saved."
+                })
+            }
         }
     }
 
@@ -707,7 +781,9 @@ class MainActivity : AppCompatActivity() {
         DiveEntry(
             number        = number,
             date          = row.getString("date"),
-            time          = row.getString("time"),
+            // HH:MM, whatever the column type returns, so it matches the keys
+            // downloads and site assignments use.
+            time          = row.getString("time").take(5),
             maxdepth      = row.getDouble("maxdepth"),
             avgdepth      = row.optDouble("avgdepth", 0.0),
             duration      = row.getInt("duration"),
@@ -960,6 +1036,7 @@ class MainActivity : AppCompatActivity() {
         btnDownload.isEnabled = false; btnScan.isEnabled = false
         progressBar.visibility = View.VISIBLE; progressBar.progress = 0
         newDivesFound = 0; skippedDives = 0; totalDeviceDives = 0
+        oldestRead = null; newestRead = null
         status("Connecting to ${dev.name}…")
 
         val btAdapter = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -1035,7 +1112,9 @@ class MainActivity : AppCompatActivity() {
     private fun describeDownload(
         complete: Boolean, failure: String?, result: JSONObject?, refused: Int
     ): String {
-        val read = "$totalDeviceDives dive(s) read"
+        val span = if (oldestRead != null && newestRead != null && oldestRead != newestRead)
+            " ($oldestRead – $newestRead)" else ""
+        val read = "$totalDeviceDives dive(s) read$span"
         val refusedNote = if (refused > 0)
             " $refused dive(s) could not be read — the computer refused them." else ""
 
@@ -1069,21 +1148,51 @@ class MainActivity : AppCompatActivity() {
     private fun uploadNewDives(deviceName: String, note: String = "") {
         scope.launch {
             var ok = 0; var fail = 0
+            var firstError: String? = null
+            val uploaded = mutableListOf<DiveEntry>()
             for (dive in diveAdapter.allItems.filter { it.isNew }) {
                 val siteName = getDiveSite(dive)
                 val site = if (siteName != null) loadSites().find { it.name == siteName } else null
                 val r = SupabaseClient.uploadDive(dive, deviceName, siteName, site?.lat, site?.lon)
-                if (r.isSuccess) { ok++; existingDiveKeys.add("${dive.date}_${dive.time}") }
-                else fail++
+                if (r.isSuccess) {
+                    ok++; uploaded.add(dive)
+                    existingDiveKeys.add(diveKey(dive.date, dive.time))
+                } else {
+                    fail++
+                    if (firstError == null) firstError = r.exceptionOrNull()?.message
+                }
             }
+            Log.i(TAG, "Upload: $ok uploaded, $fail failed" +
+                       (firstError?.let { " — first error: $it" } ?: ""))
             withContext(Dispatchers.Main) {
+                // Uploaded dives are no longer new; a failed one stays new, so
+                // the next sync tries it again instead of forgetting it.
+                if (uploaded.isNotEmpty()) diveAdapter.markUploaded(uploaded)
                 val msg = buildString {
                     append("Sync done: $ok uploaded")
-                    if (fail > 0) append(", $fail failed")
+                    if (fail > 0) append(", $fail failed — ").append(explainUploadError(firstError))
                     if (note.isNotEmpty()) append(". ").append(note)
                 }
                 status(msg)
             }
+        }
+    }
+
+    /**
+     * Turns an upload failure into something actionable. It used to say only
+     * "N failed", so dives that never reached the database gave no clue why.
+     */
+    private fun explainUploadError(message: String?): String {
+        val m = message ?: return "unknown error"
+        return when {
+            m.startsWith("HTTP 401") -> "sign-in expired; sign in again"
+            m.startsWith("HTTP 403") || m.contains("row-level security", ignoreCase = true) ->
+                "the database refused it (it needs an insert policy on dives)"
+            m.startsWith("HTTP 409") -> "a conflicting dive is already stored"
+            m.startsWith("HTTP 400") -> "the database rejected the data: " + m.removePrefix("HTTP 400: ").take(120)
+            m.contains("Unable to resolve host", ignoreCase = true) ||
+            m.contains("timeout", ignoreCase = true) -> "no connection"
+            else -> m.take(140)
         }
     }
 
@@ -1345,16 +1454,33 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setDiveSite(dive: DiveEntry, siteName: String) {
-        val key = "${dive.date}_${dive.time}"
+        val key = diveKey(dive.date, dive.time)
         diveToSite[key] = siteName
         val json = getSharedPreferences("dive_sites", MODE_PRIVATE)
             .getString("dive_assoc", "{}") ?: "{}"
         val obj = JSONObject(json); obj.put(key, siteName)
         getSharedPreferences("dive_sites", MODE_PRIVATE).edit()
             .putString("dive_assoc", obj.toString()).apply()
+
+        // Write it to the database too. Keeping it only on the phone is why
+        // site views showed nothing: they read the database.
+        if (!SupabaseClient.isLoggedIn) return
+        val pos = loadSites().find { it.name == siteName }
+        scope.launch {
+            val r = SupabaseClient.updateDiveSite(
+                rowIdByKey[key], dive.date, dive.time, siteName, pos?.lat, pos?.lon)
+            withContext(Dispatchers.Main) {
+                r.onSuccess { n ->
+                    if (n == 0) status("Site set on this phone, but the cloud changed nothing — " +
+                                       "the database needs an update policy on dives.")
+                }.onFailure { e ->
+                    status("Site set on this phone; saving to the cloud failed: ${e.message}")
+                }
+            }
+        }
     }
 
-    private fun getDiveSite(dive: DiveEntry): String? = diveToSite["${dive.date}_${dive.time}"]
+    private fun getDiveSite(dive: DiveEntry): String? = diveToSite[diveKey(dive.date, dive.time)]
 
     // ── Dive Sites dialog ─────────────────────────────────────────────────────
 
@@ -1680,11 +1806,25 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
 
         scope.launch {
-            if (!SupabaseClient.isLoggedIn) {
-                withContext(Dispatchers.Main) { tvInfo.text = "Sign in to view site history." }
-                return@launch
+            // Dives on this phone assigned to this site. The database is the
+            // shared record, but a site set here might not have reached it yet
+            // (or the database may refuse it), and the dives are already in
+            // hand — so the profile never depends on the network alone.
+            val local = withContext(Dispatchers.Main) {
+                diveAdapter.allItems
+                    .filter { getDiveSite(it) == site.name }
+                    .map { d ->
+                        SupabaseClient.SiteDive(
+                            date = d.date, maxdepth = d.maxdepth,
+                            tempMin = d.temp_min, tempMax = d.temp_max,
+                            samples = d.samples)
+                    }
             }
-            val dives = SupabaseClient.fetchSiteDives(site.name)
+            val cloud = if (SupabaseClient.isLoggedIn) SupabaseClient.fetchSiteDives(site.name)
+                        else emptyList()
+            // Same dive from both sources: keep the cloud copy.
+            val seen = cloud.map { "${it.date}|${"%.1f".format(it.maxdepth)}" }.toHashSet()
+            val dives = cloud + local.filter { "${it.date}|${"%.1f".format(it.maxdepth)}" !in seen }
             withContext(Dispatchers.Main) {
                 profileView.dives = dives
                 if (dives.isEmpty()) {
@@ -1982,6 +2122,10 @@ class MainActivity : AppCompatActivity() {
         var newDivesFound = 0
         var skippedDives  = 0
         var totalDeviceDives = 0
+        // Oldest and newest dive read this download, new or not — so the
+        // summary shows how far back the computer's log actually went.
+        var oldestRead: String? = null
+        var newestRead: String? = null
         var pendingFingerprintAddress: String? = null
 
         @JvmStatic fun onProgress(current: Int, total: Int) {
@@ -2001,6 +2145,8 @@ class MainActivity : AppCompatActivity() {
                     val key  = "${date}_${time}"
 
                     totalDeviceDives++
+                    if (oldestRead == null || date < oldestRead!!) oldestRead = date
+                    if (newestRead == null || date > newestRead!!) newestRead = date
 
                     // Skip dives already in the log
                     if (key in existingDiveKeys) {

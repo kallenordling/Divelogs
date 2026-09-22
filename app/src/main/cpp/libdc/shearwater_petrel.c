@@ -341,6 +341,22 @@ shearwater_petrel_device_foreach (dc_device_t *abstract, dc_dive_callback_t call
 			return DC_STATUS_NOMEMORY;
 		}
 
+		// DeepLog: say how this page was read and why the walk stopped. When
+		// dives go missing this is the line that tells whether the computer
+		// listed them at all, or the walk ended early — on the fingerprint, or
+		// on a record header it does not recognise. WARNING so it survives the
+		// app's log level.
+		{
+			unsigned int stop = offset < size ? array_uint16_be (data + offset) : 0;
+			const char *why = offset >= size ? "end of page"
+				: stop == 0xA5C4 ? "fingerprint match"
+				: stop == 0xFFFF ? "end of list"
+				: "unrecognised record header";
+			WARNING (abstract->context,
+				"DEEPLOG_MANIFEST page=%u dives=%u deleted=%u stopped=%s header=0x%04x",
+				page, count, deleted, why, stop);
+		}
+
 		// Stop downloading manifest if there are no more records.
 		if (count + deleted != RECORD_COUNT)
 			break;
