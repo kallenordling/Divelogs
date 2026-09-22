@@ -78,11 +78,25 @@ object SupabaseClient {
      */
     private suspend fun <T> authed(request: () -> T): T {
         if (isTokenExpired()) refreshSession()
-        return try {
-            request()
-        } catch (e: Exception) {
-            if (e.message?.startsWith("HTTP 401") == true && refreshSession()) request()
-            else throw e
+        var attempt = 0
+        while (true) {
+            try {
+                return request()
+            } catch (e: Exception) {
+                if (e.message?.startsWith("HTTP 401") == true && attempt == 0 && refreshSession()) {
+                    attempt++; continue
+                }
+                // A phone whose connection drops for a few seconds at a time
+                // (seen on a real sync: DNS failing for every app on the phone)
+                // fails each request instantly. Wait it out briefly before
+                // giving up, rather than failing a whole batch in 50 ms.
+                if (e is java.io.IOException && attempt < 3) {
+                    attempt++
+                    kotlinx.coroutines.delay(2000L * attempt)
+                    continue
+                }
+                throw e
+            }
         }
     }
 
@@ -143,11 +157,34 @@ object SupabaseClient {
 
     // ── All user dives ────────────────────────────────────────────────────────
 
-    suspend fun fetchMyDives(): List<JSONObject> = withContext(Dispatchers.IO) {
+    /**
+     * All of the user's dives, or null when they could not be loaded.
+     *
+     * This used to return an empty list on failure, which the app could not
+     * tell from an empty log: after a start with no connection it treated
+     * every downloaded dive as new and tried to upload all of them again.
+     */
+    suspend fun fetchMyDives(): List<JSONObject>? = withContext(Dispatchers.IO) {
         runCatching {
             val arr = authed { getArray("/rest/v1/dives?select=*&order=date.asc,time.asc") }
             (0 until arr.length()).map { arr.getJSONObject(it) }
-        }.getOrElse { e -> Log.e(STAG, "fetchMyDives: $e"); emptyList() }
+        }.getOrElse { e -> Log.e(STAG, "fetchMyDives: $e"); null }
+    }
+
+    /**
+     * "YYYY-MM-DD_HH:MM" for every dive already in the database, or null when
+     * the database could not be reached. Checked right before uploading, so
+     * what counts as "already stored" is the database's answer, not whatever
+     * the app happened to load at start.
+     */
+    suspend fun fetchDiveKeys(): Set<String>? = withContext(Dispatchers.IO) {
+        runCatching {
+            val arr = authed { getArray("/rest/v1/dives?select=date,time") }
+            (0 until arr.length()).map {
+                val o = arr.getJSONObject(it)
+                "${o.optString("date")}_${o.optString("time").take(5)}"
+            }.toHashSet()
+        }.getOrElse { e -> Log.e(STAG, "fetchDiveKeys: $e"); null }
     }
 
     // ── Site dives fetch ──────────────────────────────────────────────────────

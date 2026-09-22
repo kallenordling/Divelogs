@@ -700,6 +700,11 @@ class MainActivity : AppCompatActivity() {
         withContext(Dispatchers.Main) { status("Loading dives from cloud…") }
         val rows = SupabaseClient.fetchMyDives()
         withContext(Dispatchers.Main) {
+            if (rows == null) {
+                status("Couldn't load your dives from the cloud — no connection. " +
+                       "Downloads still work; uploads wait until it's back.")
+                return@withContext
+            }
             if (rows.isEmpty()) { status("No dives yet — connect a dive computer to download."); return@withContext }
             val dives = rows.mapIndexedNotNull { i, row -> rowToDiveEntry(row, i + 1) }
             diveAdapter.setAll(dives)
@@ -1147,10 +1152,28 @@ class MainActivity : AppCompatActivity() {
     /** @param note appended to the final status, e.g. that the download stopped early. */
     private fun uploadNewDives(deviceName: String, note: String = "") {
         scope.launch {
-            var ok = 0; var fail = 0
+            // Ask the database what it already holds, right now. Deciding from
+            // what was loaded at start meant a start without a connection made
+            // every dive look new.
+            val stored = SupabaseClient.fetchDiveKeys()
+            if (stored == null) {
+                withContext(Dispatchers.Main) {
+                    status("Downloaded, but not uploaded: no connection to the cloud. " +
+                           "Download again when you're online — nothing is lost, " +
+                           "the dives are still on the computer." +
+                           (if (note.isNotEmpty()) " $note" else ""))
+                }
+                return@launch
+            }
+            existingDiveKeys.addAll(stored)
+
+            var ok = 0; var fail = 0; var already = 0
             var firstError: String? = null
             val uploaded = mutableListOf<DiveEntry>()
             for (dive in diveAdapter.allItems.filter { it.isNew }) {
+                if (diveKey(dive.date, dive.time) in stored) {
+                    already++; uploaded.add(dive); continue
+                }
                 val siteName = getDiveSite(dive)
                 val site = if (siteName != null) loadSites().find { it.name == siteName } else null
                 val r = SupabaseClient.uploadDive(dive, deviceName, siteName, site?.lat, site?.lon)
@@ -1170,6 +1193,7 @@ class MainActivity : AppCompatActivity() {
                 if (uploaded.isNotEmpty()) diveAdapter.markUploaded(uploaded)
                 val msg = buildString {
                     append("Sync done: $ok uploaded")
+                    if (already > 0) append(", $already already in the cloud")
                     if (fail > 0) append(", $fail failed — ").append(explainUploadError(firstError))
                     if (note.isNotEmpty()) append(". ").append(note)
                 }

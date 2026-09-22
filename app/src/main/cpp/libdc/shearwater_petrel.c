@@ -350,7 +350,9 @@ shearwater_petrel_device_foreach (dc_device_t *abstract, dc_dive_callback_t call
 			unsigned int stop = offset < size ? array_uint16_be (data + offset) : 0;
 			const char *why = offset >= size ? "end of page"
 				: stop == 0xA5C4 ? "fingerprint match"
-				: stop == 0xFFFF ? "end of list"
+				/* Unwritten slots read back as all-zero or all-ones,
+				   depending on the model: both mean the list ended. */
+				: (stop == 0xFFFF || stop == 0x0000) ? "end of list"
 				: "unrecognised record header";
 			WARNING (abstract->context,
 				"DEEPLOG_MANIFEST page=%u dives=%u deleted=%u stopped=%s header=0x%04x",
