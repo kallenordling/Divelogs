@@ -40,6 +40,15 @@ private const val MAP_URL =
 
 const val DC_TRANSPORT_BLE = 32
 
+/**
+ * Where download fingerprints live. Versioned on purpose: earlier builds saved
+ * a fingerprint even after a download that failed partway, and every later
+ * download then stopped at it — so the dives it never reached could not be
+ * fetched again. Reading a fresh store once makes each computer's next
+ * download a full read, which recovers them.
+ */
+const val FINGERPRINT_PREFS = "fingerprints_v2"
+
 data class FoundDevice(val name: String, val address: String, val model: String? = null)
 
 data class DiveSite(val name: String, val lat: Double, val lon: Double)
@@ -960,7 +969,7 @@ class MainActivity : AppCompatActivity() {
         bleTransport = transport
 
         // Use fingerprint only when previous download was gap-free (hasGaps defaults true).
-        val fpPrefs = getSharedPreferences("fingerprints", MODE_PRIVATE)
+        val fpPrefs = getSharedPreferences(FINGERPRINT_PREFS, MODE_PRIVATE)
         val hasGaps = fpPrefs.getBoolean("gaps_${dev.address}", true)
         val fingerprint = if (hasGaps) null else {
             fpPrefs.getString("fp_${dev.address}", null)
@@ -971,30 +980,80 @@ class MainActivity : AppCompatActivity() {
         pendingFingerprintAddress = dev.address
 
         scope.launch(Dispatchers.IO) {
+            var result: JSONObject? = null
+            var failure: String? = null
             try {
                 transport.connect()
-                DcBridge.download(dev.name, DC_TRANSPORT_BLE, transport, fingerprint)
+                val raw = DcBridge.download(dev.name, DC_TRANSPORT_BLE, transport, fingerprint)
+                result = runCatching { JSONObject(raw) }.getOrNull()
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { status("Error: ${e.message}") }
+                failure = e.message ?: e.javaClass.simpleName
             } finally {
                 transport.close()
                 withContext(Dispatchers.Main) {
                     progressBar.visibility = View.GONE
                     btnScan.isEnabled = true; btnDownload.isEnabled = selectedDevice != null
-                    // Save gap status: if we skipped dives this run, gaps remain and next sync must be full.
-                    fpPrefs.edit().putBoolean("gaps_${dev.address}", skippedDives > 0).apply()
-                    val summary = "$totalDeviceDives dive(s) on device"
+
+                    val complete = failure == null && result?.optBoolean("complete", false) == true
+                    val refused = result?.optInt("skipped", 0) ?: 0
+
+                    // Only a download that finished, and met nothing already in
+                    // the log, may leave the next one to start from its
+                    // fingerprint. Anything else keeps the flag set, so the next
+                    // download reads the whole computer and picks up whatever
+                    // this one never reached.
+                    fpPrefs.edit()
+                        .putBoolean("gaps_${dev.address}", skippedDives > 0 || !complete)
+                        .apply()
+
+                    val outcome = describeDownload(complete, failure, result, refused)
+
                     if (newDivesFound == 0) {
-                        status("$summary — all already in log, nothing new.")
+                        status(if (complete) "$outcome — all already in log, nothing new." else outcome)
                         return@withContext
                     }
                     resortAndRenumber()
-                    status("$summary — $newDivesFound new, $skippedDives already in log. Uploading…")
-                    if (SupabaseClient.isLoggedIn) uploadNewDives(dev.name)
-                    else status("$newDivesFound new dive(s) found. Sign in to sync to cloud.")
+                    status("$outcome — $newDivesFound new, $skippedDives already in log. Uploading…")
+                    // Upload what did arrive, but keep saying the download was
+                    // cut short; otherwise "Sync done" would read as all done.
+                    val note = if (complete) "" else outcome
+                    if (SupabaseClient.isLoggedIn) uploadNewDives(dev.name, note)
+                    else status("$outcome — $newDivesFound new dive(s). Sign in to sync to cloud.")
                 }
             }
         }
+    }
+
+    /**
+     * One line saying how the download went.
+     *
+     * The old message was "N dive(s) on device" whatever happened — and a
+     * failure's "Error: …" was overwritten by it a moment later. So a download
+     * that died halfway read exactly like a finished one, and the dives it never
+     * reached simply seemed not to exist.
+     */
+    private fun describeDownload(
+        complete: Boolean, failure: String?, result: JSONObject?, refused: Int
+    ): String {
+        val read = "$totalDeviceDives dive(s) read"
+        val refusedNote = if (refused > 0)
+            " $refused dive(s) could not be read — the computer refused them." else ""
+
+        if (complete) return "$read.$refusedNote".trimEnd()
+
+        val why = failure ?: when (result?.optInt("status", 0)) {
+            -7 -> "the connection timed out"                    // DC_STATUS_TIMEOUT
+            -6 -> "the Bluetooth link failed"                   // DC_STATUS_IO
+            -8 -> "the computer sent something unexpected"      // DC_STATUS_PROTOCOL
+            -10 -> "it was cancelled"                           // DC_STATUS_CANCELLED
+            -1 -> if (result?.optString("stage") == "unsupported device")
+                      "this computer is not supported"
+                  else "the computer refused the request"
+            null -> "the download did not report back"
+            else -> "error ${result.optInt("status")} at ${result.optString("stage")}"
+        }
+        return "Download stopped after $totalDeviceDives dive(s): $why. " +
+               "Tap Download again — it will read the whole computer and fetch the rest."
     }
 
     private fun resortAndRenumber() {
@@ -1006,7 +1065,8 @@ class MainActivity : AppCompatActivity() {
         diveAdapter.setAll(sorted)   // setAll reverses → newest at top
     }
 
-    private fun uploadNewDives(deviceName: String) {
+    /** @param note appended to the final status, e.g. that the download stopped early. */
+    private fun uploadNewDives(deviceName: String, note: String = "") {
         scope.launch {
             var ok = 0; var fail = 0
             for (dive in diveAdapter.allItems.filter { it.isNew }) {
@@ -1020,6 +1080,7 @@ class MainActivity : AppCompatActivity() {
                 val msg = buildString {
                     append("Sync done: $ok uploaded")
                     if (fail > 0) append(", $fail failed")
+                    if (note.isNotEmpty()) append(". ").append(note)
                 }
                 status(msg)
             }
@@ -1982,7 +2043,7 @@ class MainActivity : AppCompatActivity() {
                 return
             }
             val addr = pendingFingerprintAddress ?: return
-            instance?.getSharedPreferences("fingerprints", MODE_PRIVATE)?.edit()
+            instance?.getSharedPreferences(FINGERPRINT_PREFS, MODE_PRIVATE)?.edit()
                 ?.putString("fp_$addr", hex)
                 ?.apply()
             Log.i(TAG, "Saved fingerprint for $addr: $hex")

@@ -484,6 +484,47 @@ static JavaVM*     g_jvm     = nullptr;
 static jobject     g_bleObj  = nullptr;
 static jmethodID   g_writeId = nullptr;
 
+// ── libdivecomputer logging ──────────────────────────────────────────────────
+//
+// libdivecomputer reports what went wrong ("Failed to download the dive.")
+// through its context's log function. None was ever installed, so its default
+// wrote to stderr — which Android discards — and a failed download left no
+// trace at all. This routes it to logcat under its own tag, and counts the
+// dives the Shearwater driver skipped because the computer refused them.
+
+struct LibdcLog {
+    int skippedDives = 0;
+};
+
+static void libdc_log(dc_context_t*, dc_loglevel_t level, const char*, unsigned int,
+                      const char* function, const char* message, void* userdata)
+{
+    int prio = level == DC_LOGLEVEL_ERROR   ? ANDROID_LOG_ERROR
+             : level == DC_LOGLEVEL_WARNING ? ANDROID_LOG_WARN
+             : level == DC_LOGLEVEL_INFO    ? ANDROID_LOG_INFO
+             :                                ANDROID_LOG_DEBUG;
+    __android_log_print(prio, "libdivecomputer", "%s: %s", function ? function : "?", message);
+
+    // Emitted by libdc/shearwater_petrel.c for each dive the device refused.
+    if (userdata && message && strstr(message, "DEEPLOG_SKIPPED_DIVE"))
+        ((LibdcLog*)userdata)->skippedDives++;
+}
+
+// What download() hands back to Kotlin. Before this, it returned "[]" whatever
+// happened, so the app could not tell a finished download from one that died
+// halfway — and treated both as finished.
+static jstring download_result(JNIEnv* env, dc_status_t rc, size_t delivered,
+                               int skipped, const char* stage)
+{
+    std::ostringstream o;
+    o << "{\"status\":" << (int)rc
+      << ",\"complete\":" << (rc == DC_STATUS_SUCCESS ? "true" : "false")
+      << ",\"delivered\":" << delivered
+      << ",\"skipped\":" << skipped
+      << ",\"stage\":\"" << stage << "\"}";
+    return env->NewStringUTF(o.str().c_str());
+}
+
 struct DownloadCtx {
     dc_context_t*    ctx        = nullptr;
     dc_descriptor_t* descriptor = nullptr;
@@ -807,6 +848,12 @@ Java_fi_deeplog_bridge_DcBridge_download(
     dc_context_t* ctx = nullptr;
     dc_context_new(&ctx);
 
+    // INFO rather than DEBUG: the Shearwater driver hexdumps every manifest
+    // page at DEBUG, which would drown the lines worth reading.
+    LibdcLog libdcLog;
+    dc_context_set_loglevel(ctx, DC_LOGLEVEL_INFO);
+    dc_context_set_logfunc(ctx, libdc_log, &libdcLog);
+
     dc_descriptor_t* descriptor =
         resolve_descriptor(ctx, devName, (dc_transport_t)jtransport);
 
@@ -833,7 +880,7 @@ Java_fi_deeplog_bridge_DcBridge_download(
     if (!descriptor) {
         dc_context_free(ctx);
         env->DeleteGlobalRef(g_bleObj);
-        return env->NewStringUTF("[]");
+        return download_result(env, DC_STATUS_UNSUPPORTED, 0, 0, "unsupported device");
     }
 
     // Set up BleIo.
@@ -855,7 +902,7 @@ Java_fi_deeplog_bridge_DcBridge_download(
         LOGE("dc_custom_open failed: %d", rc);
         dc_descriptor_free(descriptor); dc_context_free(ctx);
         g_bio = nullptr; env->DeleteGlobalRef(g_bleObj);
-        return env->NewStringUTF("[]");
+        return download_result(env, rc, 0, 0, "open transport");
     }
 
     dc_device_t* device = nullptr;
@@ -864,7 +911,7 @@ Java_fi_deeplog_bridge_DcBridge_download(
         LOGE("dc_device_open failed: %d", rc);
         dc_iostream_close(stream); dc_descriptor_free(descriptor); dc_context_free(ctx);
         g_bio = nullptr; env->DeleteGlobalRef(g_bleObj);
-        return env->NewStringUTF("[]");
+        return download_result(env, rc, 0, 0, "open device");
     }
 
     DownloadCtx dc;
@@ -892,10 +939,19 @@ Java_fi_deeplog_bridge_DcBridge_download(
         event_cb, &dc);
 
     rc = dc_device_foreach(device, dive_cb, &dc);
-    LOGI("dc_device_foreach returned %d, %zu dives", rc, dc.dives.size());
+    LOGI("dc_device_foreach returned %d, %zu dives, %d skipped by the device",
+         rc, dc.dives.size(), libdcLog.skippedDives);
 
-    // Send newest fingerprint to Kotlin for storage.
-    if (!dc.newestFingerprint.empty() && dc.fingerprintId) {
+    // Hand the newest fingerprint to Kotlin — but only after a download that
+    // finished. The fingerprint is where the next download stops, and it is
+    // captured from the *first* dive delivered (the newest). If the transfer
+    // died partway, the dives it never reached are all older than that one;
+    // saving it anyway meant every later download stopped before reaching
+    // them, and they could never be fetched again. That is how dives went
+    // missing for good.
+    if (rc != DC_STATUS_SUCCESS) {
+        LOGE("Download incomplete (%d): not saving a fingerprint", rc);
+    } else if (!dc.newestFingerprint.empty() && dc.fingerprintId) {
         std::ostringstream hexss;
         for (uint8_t b : dc.newestFingerprint)
             hexss << std::hex << std::setw(2) << std::setfill('0') << (int)b;
@@ -912,7 +968,8 @@ Java_fi_deeplog_bridge_DcBridge_download(
     g_bio = nullptr;
     env->DeleteGlobalRef(g_bleObj);
 
-    return env->NewStringUTF("[]"); // dives already sent via onDiveFound
+    // Dives were already sent one by one through onDiveFound.
+    return download_result(env, rc, dc.dives.size(), libdcLog.skippedDives, "download");
 }
 
 } // extern "C"

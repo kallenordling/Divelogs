@@ -53,6 +53,12 @@ jobs:
           test -s include/libdivecomputer/version.h
           test -s src/revision.h
 
+      - name: Shearwater driver tests
+        # Runs DeepLog's patched Perdix/Petrel download loop against a scripted
+        # fake computer, and checks the untouched upstream driver still fails
+        # the same scenarios — proof each test really catches its bug.
+        run: app/src/test/native/run.sh
+
       - name: Generate Gradle wrapper
         # gradle-wrapper.jar is gitignored, so ./gradlew cannot run from a
         # fresh checkout until the wrapper is regenerated.

@@ -88,8 +88,11 @@ add_library(divecomputer STATIC
     ${LIBDC}/src/seac_screen_common.c
     ${LIBDC}/src/seac_screen_parser.c
     ${LIBDC}/src/serial_posix.c
-    ${LIBDC}/src/shearwater_common.c
-    ${LIBDC}/src/shearwater_petrel.c
+    # DeepLog: fixed copies of the Shearwater Petrel/Perdix driver, in place
+    # of the submodule's. See the header of each file for what changed and
+    # why; app/src/test/native/run.sh tests them against the upstream copies.
+    ${CMAKE_SOURCE_DIR}/libdc/shearwater_common.c
+    ${CMAKE_SOURCE_DIR}/libdc/shearwater_petrel.c
     ${LIBDC}/src/shearwater_predator.c
     ${LIBDC}/src/shearwater_predator_parser.c
     ${LIBDC}/src/socket.c
@@ -123,6 +126,9 @@ add_library(divecomputer STATIC
 )
 
 target_include_directories(divecomputer PUBLIC ${LIBDC}/include)
+# The override files live outside the submodule but include its private
+# headers ("shearwater_common.h", "context-private.h", ...) by name.
+target_include_directories(divecomputer PRIVATE ${LIBDC}/src)
 
 target_compile_definitions(divecomputer PRIVATE
     ENABLE_LOGGING
