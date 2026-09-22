@@ -216,37 +216,94 @@ DL.siteProfile = (siteDives) => {
     prev = v.cx;
   }
 
-  // Depth bins: fine enough to show a thermocline, coarse enough that a
-  // year of dives stays a few thousand rectangles.
+  // Depth bins: fine enough to show a thermocline, coarse enough that the
+  // chart stays a few thousand rectangles.
   const bin = Math.max(0.5, depthTop / 90);
   const colourOf = (c) => validTemp(c) ? DL.tempColour(c, lo, hi) : '#3d5a75';
 
+  // One temperature per depth bin for each dive: the mean of its samples in
+  // that band, with bands it has no reading for filled from the readings
+  // above and below. A dive with no readings at all takes its recorded water
+  // temperature throughout, so it still appears.
+  for (const v of dives) {
+    const n = Math.floor(v.maxD / bin) + 1;
+    const sum = new Array(n).fill(0), cnt = new Array(n).fill(0);
+    for (const p of v.pts) {
+      const k = Math.min(n - 1, Math.floor(p.d / bin));
+      if (validTemp(p.c)) { sum[k] += p.c; cnt[k]++; }
+    }
+    const prof = sum.map((s, k) => (cnt[k] ? s / cnt[k] : NaN));
+    const known = prof.map((c, k) => (isFinite(c) ? k : -1)).filter((k) => k >= 0);
+    if (!known.length) {
+      prof.fill(validTemp(Number(v.d.temp_min)) ? Number(v.d.temp_min) : NaN);
+    } else {
+      for (let k = 0; k < n; k++) {
+        if (isFinite(prof[k])) continue;
+        const up = known.filter((j) => j < k).pop();
+        const down = known.find((j) => j > k);
+        prof[k] = up == null ? prof[down] : down == null ? prof[up]
+          : prof[up] + (prof[down] - prof[up]) * (k - up) / (down - up);
+      }
+    }
+    v.prof = prof;
+  }
+  const tempAt = (v, k) => v.prof[Math.min(k, v.prof.length - 1)];
+
+  // One vertical strip of colour: bins of the same shade are merged into a
+  // single rectangle, which keeps a smooth gradient to a handful of shapes.
+  const SHADES = 48;
+  const shade = (c) => validTemp(c)
+    ? lo + (Math.round((c - lo) / ((hi - lo) || 1) * SHADES) / SHADES) * (hi - lo) : NaN;
+  const strip = (x0, width, depth, tempOfBin) => {
+    const last = Math.floor(depth / bin);
+    let out = '', start = 0, cur = shade(tempOfBin(0));
+    const flush = (end) => {
+      const top = y(start * bin), bottom = y(Math.min(end * bin, depth));
+      if (bottom > top) out += `<rect x="${x0.toFixed(1)}" y="${top.toFixed(1)}" width="${width.toFixed(1)}"
+                     height="${(bottom - top + 0.3).toFixed(1)}" fill="${colourOf(cur)}"/>`;
+    };
+    for (let k = 1; k <= last; k++) {
+      const c = shade(tempOfBin(k));
+      if (c === cur || (!isFinite(c) && !isFinite(cur))) continue;
+      flush(k); start = k; cur = c;
+    }
+    flush(last + 1);
+    return out;
+  };
+
+  // Between neighbouring dives, both depth and temperature are blended
+  // linearly — but only across gaps short enough for that to be a fair
+  // guess. Blending July into the next June would paint a winter nobody
+  // measured, so longer gaps stay empty.
+  const MAX_GAP = 90 * DAY;
+  const SW = 3;
+  let fill = '';
+  for (let i = 1; i < dives.length; i++) {
+    const a = dives[i - 1], z = dives[i];
+    if (z.when - a.when > MAX_GAP) continue;
+    const xa = a.cx + cw / 2, xz = z.cx - cw / 2;
+    for (let px = xa; px < xz; px += SW) {
+      const f = (px + SW / 2 - a.cx) / (z.cx - a.cx);
+      const depth = a.maxD + (z.maxD - a.maxD) * f;
+      fill += strip(px, Math.min(SW, xz - px) + 0.6, depth, (k) => {
+        const ca = tempAt(a, k), cz = tempAt(z, k);
+        return !isFinite(ca) ? cz : !isFinite(cz) ? ca : ca + (cz - ca) * f;
+      });
+    }
+  }
+
+  // The dives themselves, drawn over the blend and marked at the surface so
+  // measured water stays distinguishable from interpolated water.
   let cols = '';
   for (const v of dives) {
-    const bins = new Map();
-    for (const p of v.pts) {
-      const k = Math.floor(p.d / bin);
-      const acc = bins.get(k) || { sum: 0, n: 0 };
-      if (validTemp(p.c)) { acc.sum += p.c; acc.n++; }
-      bins.set(k, acc);
-    }
-    // No samples, or none with temperature: one block in the dive's
-    // recorded water temperature, so the dive still appears.
-    const fallback = validTemp(Number(v.d.temp_min)) ? Number(v.d.temp_min) : NaN;
-    const deepest = Math.floor(v.maxD / bin);
-    let rects = '', last = fallback;
-    for (let k = 0; k <= deepest; k++) {
-      const acc = bins.get(k);
-      if (acc && acc.n) last = acc.sum / acc.n;
-      const top = y(k * bin), bottom = y(Math.min((k + 1) * bin, v.maxD));
-      rects += `<rect x="${(v.cx - cw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${cw.toFixed(1)}"
-                      height="${Math.max(0.6, bottom - top + 0.4).toFixed(1)}" fill="${colourOf(last)}"/>`;
-    }
     const dt = [Number(v.d.temp_min), Number(v.d.temp_max)].filter(validTemp);
     const label = `${DL.prettyDate(v.d.date)} ${DL.hhmm(v.d.time)} · ${DL.num(v.maxD)} m`
       + (dt.length ? ` · ${DL.num(Math.min(...dt))}–${DL.num(Math.max(...dt))} °C` : '');
     cols += `<g data-dive="${DL.esc(String(v.d.id))}" style="cursor:pointer">
-      <title>${DL.esc(label)}</title>${rects}</g>`;
+      <title>${DL.esc(label)}</title>
+      ${strip(v.cx - cw / 2, cw, v.maxD, (k) => tempAt(v, k))}
+      <path d="M${(v.cx - 4).toFixed(1)},${T - 7}L${(v.cx + 4).toFixed(1)},${T - 7}L${v.cx.toFixed(1)},${T - 1}Z"
+            fill="#E6F1F6"/></g>`;
   }
 
   const step = maxD <= 12 ? 3 : maxD <= 30 ? 5 : maxD <= 60 ? 10 : 20;
@@ -302,11 +359,11 @@ DL.siteProfile = (siteDives) => {
   return `<div class="chart">
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
          aria-label="Depth of ${dives.length} dive(s) by date, coloured by water temperature from ${lo.toFixed(1)} to ${hi.toFixed(1)} degrees Celsius">
-      ${grid}${cols}${bar}
-      <text x="${L}" y="${T - 1}" fill="#668595" font-size="10.5">metres</text>
+      ${grid}<g opacity=".78">${fill}</g>${cols}${bar}
+      <text x="${L - 8}" y="${H - 9}" fill="#668595" font-size="10.5" text-anchor="end">m</text>
     </svg>
     <div class="chart-legend">
-      ${hasTemp ? '<span>Each column is one dive, coloured by water temperature at each depth</span>'
+      ${hasTemp ? '<span>▼ marks each dive · colour is water temperature · gaps of up to 90 days are interpolated</span>'
                 : '<span>No temperature recorded here</span>'}
       <span>${dives.length} dive${dives.length === 1 ? '' : 's'} · tap one to open it</span>
     </div>
