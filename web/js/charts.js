@@ -206,15 +206,11 @@ DL.siteProfile = (siteDives) => {
   const t0 = first - pad, t1 = last + pad;
   const x = (t) => L + ((t - t0) / (t1 - t0)) * gw;
 
-  // Columns wide enough to see, narrow enough not to swallow each other.
-  // Dives on the same day would land on the same spot, so each one that
-  // would overlap its predecessor is set just to its right.
-  const cw = Math.max(3, Math.min(22, gw / (dives.length * 1.8)));
-  let prev = -Infinity;
-  for (const v of dives) {
-    v.cx = Math.max(x(v.when), prev + cw + 1);
-    prev = v.cx;
-  }
+  // Every dive sits on its true date, so the daily interpolation lines up
+  // with it. Columns are at most three days wide — over a span of years that
+  // is the 3 px minimum, while a single summer gets broad columns.
+  const cw = Math.max(3, Math.min(22, gw / (dives.length * 1.8), x(t0 + 3 * DAY) - x(t0)));
+  for (const v of dives) v.cx = x(v.when);
 
   // Depth bins: fine enough to show a thermocline, coarse enough that the
   // chart stays a few thousand rectangles.
@@ -271,25 +267,31 @@ DL.siteProfile = (siteDives) => {
     return out;
   };
 
-  // Between neighbouring dives, both depth and temperature are blended
-  // linearly — but only across gaps short enough for that to be a fair
-  // guess. Blending July into the next June would paint a winter nobody
-  // measured, so longer gaps stay empty.
-  const MAX_GAP = 90 * DAY;
-  const SW = 3;
+  // Daily values for every month with two or more dives. Each day takes
+  // the nearest dive before it and the nearest after it, and blends their
+  // depth and their temperature at each depth by how far through the gap it
+  // falls. A month with a single dive shows only that dive: one reading is
+  // not enough to say how the month went.
+  const monthOf = (t) => { const d = new Date(t); return d.getFullYear() * 12 + d.getMonth(); };
+  const perMonth = new Map();
+  for (const v of dives) perMonth.set(monthOf(v.when), (perMonth.get(monthOf(v.when)) || 0) + 1);
+
   let fill = '';
-  for (let i = 1; i < dives.length; i++) {
-    const a = dives[i - 1], z = dives[i];
-    if (z.when - a.when > MAX_GAP) continue;
-    const xa = a.cx + cw / 2, xz = z.cx - cw / 2;
-    for (let px = xa; px < xz; px += SW) {
-      const f = (px + SW / 2 - a.cx) / (z.cx - a.cx);
-      const depth = a.maxD + (z.maxD - a.maxD) * f;
-      fill += strip(px, Math.min(SW, xz - px) + 0.6, depth, (k) => {
-        const ca = tempAt(a, k), cz = tempAt(z, k);
-        return !isFinite(ca) ? cz : !isFinite(cz) ? ca : ca + (cz - ca) * f;
-      });
-    }
+  const startDay = new Date(first); startDay.setHours(0, 0, 0, 0);
+  let i = 0;
+  for (let day = startDay.getTime(); day < last; day += DAY) {
+    const noon = day + DAY / 2;
+    if ((perMonth.get(monthOf(noon)) || 0) < 2) continue;
+    while (i < dives.length - 2 && dives[i + 1].when <= noon) i++;
+    const a = dives[i], z = dives[i + 1];
+    if (!(a.when <= noon && noon <= z.when)) continue;
+    const f = (noon - a.when) / ((z.when - a.when) || 1);
+    const depth = a.maxD + (z.maxD - a.maxD) * f;
+    const x0 = x(day), x1 = x(day + DAY);
+    fill += strip(x0, x1 - x0 + 0.6, depth, (k) => {
+      const ca = tempAt(a, k), cz = tempAt(z, k);
+      return !isFinite(ca) ? cz : !isFinite(cz) ? ca : ca + (cz - ca) * f;
+    });
   }
 
   // The dives themselves, drawn over the blend and marked at the surface so
@@ -363,7 +365,7 @@ DL.siteProfile = (siteDives) => {
       <text x="${L - 8}" y="${H - 9}" fill="#668595" font-size="10.5" text-anchor="end">m</text>
     </svg>
     <div class="chart-legend">
-      ${hasTemp ? '<span>▼ marks each dive · colour is water temperature · gaps of up to 90 days are interpolated</span>'
+      ${hasTemp ? '<span>▼ marks each dive · colour is water temperature · months with several dives are interpolated day by day</span>'
                 : '<span>No temperature recorded here</span>'}
       <span>${dives.length} dive${dives.length === 1 ? '' : 's'} · tap one to open it</span>
     </div>
