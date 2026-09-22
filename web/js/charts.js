@@ -160,33 +160,94 @@ DL.diveProfile = (samples, recordedMax = null) => {
 };
 
 /**
- * Every dive at one site on one chart, each segment coloured by the water
- * temperature recorded there. Segments are batched into colour buckets, one
- * path each — a 3,000-sample dive would otherwise be 3,000 elements.
+ * Every dive at one site on one chart: the date along the bottom, depth down
+ * the side, and each dive a column coloured by the water temperature it
+ * recorded at each depth. Read across, it shows how the water column changes
+ * through the seasons — when the thermocline forms, how deep it sits.
  */
 DL.siteProfile = (siteDives) => {
-  const tracks = siteDives.map((d) => points(d.samples)).filter((p) => p.length > 1);
-  if (!tracks.length) {
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  const dives = siteDives.map((d) => {
+    const when = Date.parse(`${d.date}T${(d.time || '12:00').slice(0, 5)}:00`);
+    const pts = points(d.samples);
+    const maxD = Math.max(Number(d.maxdepth) || 0, ...pts.map((p) => p.d));
+    return { d, when, pts, maxD };
+  }).filter((v) => isFinite(v.when) && v.maxD > 0)
+    .sort((a, z) => a.when - z.when);
+
+  if (!dives.length) {
     return DL.emptyState({
       icon: 'wave', title: 'No profiles yet',
-      detail: 'Dives logged here have no sample data to plot.',
+      detail: 'Dives logged here have no depth recorded to plot.',
     });
   }
 
-  const all = tracks.flat();
-  const maxT = Math.max(...all.map((p) => p.t)) || 1;
-  const maxD = Math.max(...all.map((p) => p.d)) || 1;
-  const depthTop = maxD * 1.1;
-
-  const temps = all.map((p) => p.c).filter((c) => isFinite(c) && c !== 0);
+  const validTemp = (c) => c != null && isFinite(c) && c !== 0;
+  const temps = dives.flatMap((v) => [
+    ...v.pts.map((p) => p.c), Number(v.d.temp_min), Number(v.d.temp_max),
+  ]).filter(validTemp);
   const hasTemp = temps.length > 0;
   const lo = hasTemp ? Math.min(...temps) : 0;
   const hi = hasTemp ? Math.max(...temps) : 1;
 
+  const maxD = Math.max(...dives.map((v) => v.maxD));
+  const depthTop = maxD * 1.1;
+
   const W = 900, H = 340, L = 46, R = 66, T = 14, B = 30;
   const gw = W - L - R, gh = H - T - B;
-  const x = (t) => L + (t / maxT) * gw;
   const y = (d) => T + (d / depthTop) * gh;
+
+  // Time axis, padded so the first and last columns sit inside the frame.
+  const DAY = 86400000;
+  const first = dives[0].when, last = dives[dives.length - 1].when;
+  const pad = Math.max((last - first) * 0.05, 3 * DAY);
+  const t0 = first - pad, t1 = last + pad;
+  const x = (t) => L + ((t - t0) / (t1 - t0)) * gw;
+
+  // Columns wide enough to see, narrow enough not to swallow each other.
+  // Dives on the same day would land on the same spot, so each one that
+  // would overlap its predecessor is set just to its right.
+  const cw = Math.max(3, Math.min(22, gw / (dives.length * 1.8)));
+  let prev = -Infinity;
+  for (const v of dives) {
+    v.cx = Math.max(x(v.when), prev + cw + 1);
+    prev = v.cx;
+  }
+
+  // Depth bins: fine enough to show a thermocline, coarse enough that a
+  // year of dives stays a few thousand rectangles.
+  const bin = Math.max(0.5, depthTop / 90);
+  const colourOf = (c) => validTemp(c) ? DL.tempColour(c, lo, hi) : '#3d5a75';
+
+  let cols = '';
+  for (const v of dives) {
+    const bins = new Map();
+    for (const p of v.pts) {
+      const k = Math.floor(p.d / bin);
+      const acc = bins.get(k) || { sum: 0, n: 0 };
+      if (validTemp(p.c)) { acc.sum += p.c; acc.n++; }
+      bins.set(k, acc);
+    }
+    // No samples, or none with temperature: one block in the dive's
+    // recorded water temperature, so the dive still appears.
+    const fallback = validTemp(Number(v.d.temp_min)) ? Number(v.d.temp_min) : NaN;
+    const deepest = Math.floor(v.maxD / bin);
+    let rects = '', last = fallback;
+    for (let k = 0; k <= deepest; k++) {
+      const acc = bins.get(k);
+      if (acc && acc.n) last = acc.sum / acc.n;
+      const top = y(k * bin), bottom = y(Math.min((k + 1) * bin, v.maxD));
+      rects += `<rect x="${(v.cx - cw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${cw.toFixed(1)}"
+                      height="${Math.max(0.6, bottom - top + 0.4).toFixed(1)}" fill="${colourOf(last)}"/>`;
+    }
+    const dt = [Number(v.d.temp_min), Number(v.d.temp_max)].filter(validTemp);
+    const label = `${DL.prettyDate(v.d.date)} ${DL.hhmm(v.d.time)} · ${DL.num(v.maxD)} m`
+      + (dt.length ? ` · ${DL.num(Math.min(...dt))}–${DL.num(Math.max(...dt))} °C` : '');
+    cols += `<g data-dive="${DL.esc(String(v.d.id))}" style="cursor:pointer">
+      <title>${DL.esc(label)}</title>${rects}</g>`;
+  }
 
   const step = maxD <= 12 ? 3 : maxD <= 30 ? 5 : maxD <= 60 ? 10 : 20;
   let grid = '';
@@ -196,34 +257,34 @@ DL.siteProfile = (siteDives) => {
          +  `<text x="${L - 8}" y="${+py + 4}" fill="#668595" font-size="11"
                    text-anchor="end">${d}</text>`;
   }
-  const minutes = maxT / 60;
-  const mStep = Math.max(1, Math.ceil(minutes / 7));
-  for (let m = 0; m <= minutes; m += mStep) {
-    const px = x(m * 60).toFixed(1);
-    grid += `<line x1="${px}" y1="${T}" x2="${px}" y2="${T + gh}" stroke="#122B39"/>`
-         +  `<text x="${px}" y="${H - 9}" fill="#668595" font-size="11"
-                   text-anchor="middle">${m}</text>`;
-  }
 
-  const BUCKETS = 24;
-  const bucketOf = (c) => (!isFinite(c) || c === 0) ? -1
-    : Math.max(0, Math.min(BUCKETS - 1, Math.floor((c - lo) / ((hi - lo) || 1) * BUCKETS)));
-
-  const paths = new Map();
-  for (const pts of tracks) {
-    for (let i = 1; i < pts.length; i++) {
-      const b = bucketOf(pts[i].c);
-      const seg = `M${x(pts[i - 1].t).toFixed(1)},${y(pts[i - 1].d).toFixed(1)}`
-                + `L${x(pts[i].t).toFixed(1)},${y(pts[i].d).toFixed(1)}`;
-      paths.set(b, (paths.get(b) || '') + seg);
+  // Date ticks on calendar boundaries: days for a short span, otherwise the
+  // first of a month, stepping far enough apart to leave room for labels.
+  const span = t1 - t0;
+  const ticks = [];
+  if (span < 75 * DAY) {
+    const days = [1, 2, 7, 14].find((n) => span / (n * DAY) <= 7) || 14;
+    const s = new Date(t0); s.setHours(0, 0, 0, 0);
+    for (let t = s.getTime() + DAY; t < t1; t += days * DAY) {
+      const d = new Date(t);
+      ticks.push([t, `${d.getDate()} ${MONTHS[d.getMonth()]}`]);
+    }
+  } else {
+    const months = [1, 2, 3, 6, 12, 24, 60].find((n) => span / (n * 30.4 * DAY) <= 7) || 60;
+    const s = new Date(t0);
+    let d = new Date(s.getFullYear(), months >= 12 ? 0 : s.getMonth() + 1, 1);
+    if (months >= 12 && d.getTime() < t0) d = new Date(d.getFullYear() + 1, 0, 1);
+    if (months < 12) d.setMonth(Math.ceil(d.getMonth() / months) * months);
+    for (; d.getTime() < t1; d = new Date(d.getFullYear(), d.getMonth() + months, 1)) {
+      ticks.push([d.getTime(), months >= 12 ? String(d.getFullYear())
+        : `${MONTHS[d.getMonth()]} ${d.getFullYear()}`]);
     }
   }
-
-  let lines = '';
-  for (const [b, d] of [...paths.entries()].sort((a, z) => a[0] - z[0])) {
-    const stroke = b < 0 ? '#3d5a75' : DL.tempColour(lo + (b + 0.5) / BUCKETS * (hi - lo), lo, hi);
-    lines += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="2.2"
-                    stroke-linecap="round" opacity="${tracks.length > 6 ? .62 : .9}"/>`;
+  for (const [t, text] of ticks) {
+    const px = x(t).toFixed(1);
+    grid += `<line x1="${px}" y1="${T}" x2="${px}" y2="${T + gh}" stroke="#122B39"/>`
+         +  `<text x="${px}" y="${H - 9}" fill="#668595" font-size="11"
+                   text-anchor="middle">${text}</text>`;
   }
 
   let bar = '';
@@ -240,15 +301,14 @@ DL.siteProfile = (siteDives) => {
 
   return `<div class="chart">
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
-         aria-label="Depth against time for ${tracks.length} dive(s), coloured by water temperature from ${lo.toFixed(1)} to ${hi.toFixed(1)} degrees Celsius">
-      ${grid}${lines}${bar}
+         aria-label="Depth of ${dives.length} dive(s) by date, coloured by water temperature from ${lo.toFixed(1)} to ${hi.toFixed(1)} degrees Celsius">
+      ${grid}${cols}${bar}
       <text x="${L}" y="${T - 1}" fill="#668595" font-size="10.5">metres</text>
-      <text x="${W - R}" y="${H - 9}" fill="#668595" font-size="10.5" text-anchor="end">minutes</text>
     </svg>
     <div class="chart-legend">
-      ${hasTemp ? '<span>Colour shows water temperature</span>'
+      ${hasTemp ? '<span>Each column is one dive, coloured by water temperature at each depth</span>'
                 : '<span>No temperature recorded here</span>'}
-      <span>${tracks.length} profile${tracks.length === 1 ? '' : 's'}</span>
+      <span>${dives.length} dive${dives.length === 1 ? '' : 's'} · tap one to open it</span>
     </div>
   </div>`;
 };

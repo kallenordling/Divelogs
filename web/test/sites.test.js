@@ -132,7 +132,7 @@ function boot(dives) {
   ok('site view shows dives, deepest, total time, last dived',
      site.querySelectorAll('.summary .cell').length === 4);
   ok('site view draws the temperature profile',
-     !!site.querySelector('.chart svg') && /stroke="rgb\(/.test(site.querySelector('.chart').innerHTML),
+     !!site.querySelector('.chart svg') && /fill="rgb\(/.test(site.querySelector('.chart').innerHTML),
      'no coloured profile');
   ok('site view reports coldest and warmest', /Coldest/.test(site.textContent) && /Warmest/.test(site.textContent));
   ok('site view lists the dives there',

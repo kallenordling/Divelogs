@@ -450,8 +450,9 @@ DL.showSite = (name) => {
       site_lon: pos ? pos.lon : null,
     }));
   }
-  view.querySelectorAll('tr[data-dive]').forEach((tr) =>
-    tr.addEventListener('click', () => DL.showDive(tr.dataset.dive)));
+  // Rows in the table and columns in the chart both open their dive.
+  view.querySelectorAll('[data-dive]').forEach((el) =>
+    el.addEventListener('click', () => DL.showDive(el.dataset.dive)));
 
   DL.go('site');
 };
