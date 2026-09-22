@@ -27,6 +27,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default is 'tools platform-tools', but the legacy
+          # 'tools' package is gone from current command-line tools, so
+          # sdkmanager fails and takes the whole job with it. Gradle installs
+          # the NDK and CMake it needs on its own.
+          packages: 'platform-tools'
+          log-accepted-android-sdk-licenses: false
 
       - name: Generate libdivecomputer headers
         # version.h and revision.h are produced by autotools, which does not
