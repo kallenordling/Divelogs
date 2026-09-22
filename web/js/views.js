@@ -403,8 +403,12 @@ DL.showSite = (name) => {
         <div class="cell"><div class="k">Last dived</div><div class="v tnum">${DL.prettyDate(row.last)}</div></div>
       </div>
 
-      ${DL.sectionHead('Temperature profile')}
-      ${DL.siteProfile(ds)}
+      ${DL.sectionHead('Temperature profile', `
+        <button class="btn btn-quiet btn-sm" data-act="zoom-reset" hidden>Reset zoom</button>
+        <button class="btn btn-ghost btn-sm" data-act="export-png">Download PNG</button>
+        <button class="btn btn-ghost btn-sm" data-act="export-svg">SVG</button>`)}
+      <div id="site-chart"></div>
+      <div class="small" style="margin-top:6px">Drag across the chart to zoom in on a period and depth.</div>
 
       <div class="metrics-grid" style="margin-top:20px">
         ${temps.length ? DL.metric({ label: 'Coldest', value: DL.num(Math.min(...temps)), unit: '°C' }) : ''}
@@ -450,11 +454,100 @@ DL.showSite = (name) => {
       site_lon: pos ? pos.lon : null,
     }));
   }
-  // Rows in the table and columns in the chart both open their dive.
-  view.querySelectorAll('[data-dive]').forEach((el) =>
-    el.addEventListener('click', () => DL.showDive(el.dataset.dive)));
+  view.querySelectorAll('tr[data-dive]').forEach((tr) =>
+    tr.addEventListener('click', () => DL.showDive(tr.dataset.dive)));
+
+  if (dived) DL.siteChart(view, name, ds);
 
   DL.go('site');
+};
+
+/**
+ * The site's temperature chart with its controls: drag a box to zoom into a
+ * period and depth range (again and again), reset back out, and download
+ * what is on screen as PNG or SVG.
+ */
+DL.siteChart = (view, name, ds) => {
+  const holder = view.querySelector('#site-chart');
+  const reset = view.querySelector('[data-act="zoom-reset"]');
+  let zoom = null;
+
+  const draw = () => {
+    holder.innerHTML = DL.siteProfile(ds, zoom);
+    reset.hidden = !zoom;
+    const svg = holder.querySelector('svg.site-chart');
+    if (svg) bindDrag(svg);
+  };
+
+  // A press that barely moves is a tap on a dive; anything more is a zoom box.
+  const bindDrag = (svg) => {
+    const [L, T, gw, gh] = svg.dataset.plot.split(',').map(Number);
+    const t0 = +svg.dataset.t0, t1 = +svg.dataset.t1;
+    const d0 = +svg.dataset.d0, d1 = +svg.dataset.d1;
+    const toPlot = (e) => {
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX; pt.y = e.clientY;
+      const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+      return { x: Math.max(L, Math.min(L + gw, p.x)), y: Math.max(T, Math.min(T + gh, p.y)) };
+    };
+    let start = null, box = null;
+
+    svg.addEventListener('pointerdown', (e) => {
+      if (e.button > 0) return;
+      start = { ...toPlot(e), cx: e.clientX, cy: e.clientY, target: e.target };
+      svg.setPointerCapture(e.pointerId);
+    });
+    svg.addEventListener('pointermove', (e) => {
+      if (!start) return;
+      const p = toPlot(e);
+      if (!box) {
+        box = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        box.setAttribute('fill', 'rgba(57,198,232,.18)');
+        box.setAttribute('stroke', '#39C6E8');
+        box.setAttribute('stroke-dasharray', '4 3');
+        svg.appendChild(box);
+      }
+      box.setAttribute('x', Math.min(start.x, p.x));
+      box.setAttribute('y', Math.min(start.y, p.y));
+      box.setAttribute('width', Math.abs(p.x - start.x));
+      box.setAttribute('height', Math.abs(p.y - start.y));
+    });
+    const finish = (e) => {
+      if (!start) return;
+      const s = start; start = null;
+      if (box) { box.remove(); box = null; }
+      const moved = Math.hypot(e.clientX - s.cx, e.clientY - s.cy);
+      if (moved < 6) {
+        const g = s.target.closest && s.target.closest('[data-dive]');
+        if (g) DL.showDive(g.dataset.dive);
+        return;
+      }
+      const p = toPlot(e);
+      const tAt = (px) => t0 + ((px - L) / gw) * (t1 - t0);
+      const dAt = (py) => d0 + ((py - T) / gh) * (d1 - d0);
+      const nt0 = tAt(Math.min(s.x, p.x)), nt1 = tAt(Math.max(s.x, p.x));
+      let nd0 = dAt(Math.min(s.y, p.y)), nd1 = dAt(Math.max(s.y, p.y));
+      // A box drawn as a thin horizontal sweep means "this period": keep the
+      // depth range rather than zooming into a sliver of it.
+      if (Math.abs(p.y - s.y) < 12) { nd0 = d0; nd1 = d1; }
+      // Starting near the top edge means "from the surface"; otherwise round
+      // to half metres so the axis and the zoom note read cleanly.
+      if (nd0 - d0 < (d1 - d0) * 0.05) nd0 = d0;
+      nd0 = Math.floor(nd0 * 2) / 2; nd1 = Math.ceil(nd1 * 2) / 2;
+      if (nt1 - nt0 < 3600e3 || nd1 - nd0 < 0.5) return;   // too small to mean anything
+      zoom = { t0: nt0, t1: nt1, d0: Math.max(0, nd0), d1: nd1 };
+      draw();
+    };
+    svg.addEventListener('pointerup', finish);
+    svg.addEventListener('pointercancel', () => { start = null; if (box) { box.remove(); box = null; } });
+  };
+
+  reset.addEventListener('click', () => { zoom = null; draw(); });
+  view.querySelector('[data-act="export-png"]').addEventListener('click', () =>
+    DL.exportChart(holder.querySelector('.chart'), name, 'png'));
+  view.querySelector('[data-act="export-svg"]').addEventListener('click', () =>
+    DL.exportChart(holder.querySelector('.chart'), name, 'svg'));
+  draw();
 };
 
 // ── Statistics ─────────────────────────────────────────────────────────────

@@ -117,7 +117,7 @@ a:hover { color: var(--accent-2); }
 .wrap    { flex-wrap: wrap; }
 
 .section-head {
-  display: flex; align-items: baseline; gap: var(--s3);
+  display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap;
   margin: var(--s6) 0 var(--s3);
 }
 .section-head:first-child { margin-top: 0; }
@@ -408,6 +408,10 @@ select.input {
   padding: var(--s3);
 }
 .chart svg { display: block; width: 100%; height: auto; }
+/* The site chart zooms by dragging, so touches on it must not scroll the page. */
+.chart svg.site-chart { touch-action: none; cursor: crosshair; user-select: none;
+                        -webkit-user-select: none; }
+.chart svg.site-chart [data-dive] { cursor: pointer; }
 .chart-legend {
   display: flex; gap: var(--s4); justify-content: center; flex-wrap: wrap;
   font-size: 12px; color: var(--text-2); padding: var(--s2) 0 2px;

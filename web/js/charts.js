@@ -164,8 +164,12 @@ DL.diveProfile = (samples, recordedMax = null) => {
  * the side, and each dive a column coloured by the water temperature it
  * recorded at each depth. Read across, it shows how the water column changes
  * through the seasons — when the thermocline forms, how deep it sits.
+ *
+ * `view` zooms in: {t0, t1} is the date range in ms and {d0, d1} the depth
+ * range in metres. The colour scale stays that of the whole site, so a
+ * zoomed chart reads the same as the full one.
  */
-DL.siteProfile = (siteDives) => {
+DL.siteProfile = (siteDives, view = null) => {
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -193,28 +197,33 @@ DL.siteProfile = (siteDives) => {
   const hi = hasTemp ? Math.max(...temps) : 1;
 
   const maxD = Math.max(...dives.map((v) => v.maxD));
-  const depthTop = maxD * 1.1;
+  const zoomed = !!view;
+  const d0 = zoomed ? view.d0 : 0;
+  const d1 = zoomed ? view.d1 : maxD * 1.1;
 
   const W = 900, H = 340, L = 46, R = 66, T = 14, B = 30;
   const gw = W - L - R, gh = H - T - B;
-  const y = (d) => T + (d / depthTop) * gh;
+  const y = (d) => T + ((d - d0) / (d1 - d0)) * gh;
 
   // Time axis, padded so the first and last columns sit inside the frame.
   const DAY = 86400000;
   const first = dives[0].when, last = dives[dives.length - 1].when;
   const pad = Math.max((last - first) * 0.05, 3 * DAY);
-  const t0 = first - pad, t1 = last + pad;
+  const t0 = zoomed ? view.t0 : first - pad;
+  const t1 = zoomed ? view.t1 : last + pad;
   const x = (t) => L + ((t - t0) / (t1 - t0)) * gw;
+  const visible = dives.filter((v) => v.when >= t0 && v.when <= t1);
 
   // Every dive sits on its true date, so the daily interpolation lines up
   // with it. Columns are at most three days wide — over a span of years that
   // is the 3 px minimum, while a single summer gets broad columns.
-  const cw = Math.max(3, Math.min(22, gw / (dives.length * 1.8), x(t0 + 3 * DAY) - x(t0)));
+  const cw = Math.max(3, Math.min(22, gw / (Math.max(1, visible.length) * 1.8),
+                                  x(t0 + 3 * DAY) - x(t0)));
   for (const v of dives) v.cx = x(v.when);
 
   // Depth bins: fine enough to show a thermocline, coarse enough that the
-  // chart stays a few thousand rectangles.
-  const bin = Math.max(0.5, depthTop / 90);
+  // chart stays a few thousand rectangles. Zooming in on depth refines them.
+  const bin = Math.max(0.1, (d1 - d0) / 90);
   const colourOf = (c) => validTemp(c) ? DL.tempColour(c, lo, hi) : '#3d5a75';
 
   // One temperature per depth bin for each dive: the mean of its samples in
@@ -279,7 +288,9 @@ DL.siteProfile = (siteDives) => {
   let fill = '';
   const startDay = new Date(first); startDay.setHours(0, 0, 0, 0);
   let i = 0;
-  for (let day = startDay.getTime(); day < last; day += DAY) {
+  // Only the days on screen are drawn; the dives either side still count.
+  while (startDay.getTime() + DAY < t0) startDay.setDate(startDay.getDate() + 1);
+  for (let day = startDay.getTime(); day < Math.min(last, t1); day += DAY) {
     const noon = day + DAY / 2;
     if ((perMonth.get(monthOf(noon)) || 0) < 2) continue;
     while (i < dives.length - 2 && dives[i + 1].when <= noon) i++;
@@ -296,25 +307,25 @@ DL.siteProfile = (siteDives) => {
 
   // The dives themselves, drawn over the blend and marked at the surface so
   // measured water stays distinguishable from interpolated water.
-  let cols = '';
-  for (const v of dives) {
+  let cols = '', marks = '';
+  for (const v of visible) {
     const dt = [Number(v.d.temp_min), Number(v.d.temp_max)].filter(validTemp);
     const label = `${DL.prettyDate(v.d.date)} ${DL.hhmm(v.d.time)} · ${DL.num(v.maxD)} m`
       + (dt.length ? ` · ${DL.num(Math.min(...dt))}–${DL.num(Math.max(...dt))} °C` : '');
     cols += `<g data-dive="${DL.esc(String(v.d.id))}" style="cursor:pointer">
       <title>${DL.esc(label)}</title>
-      ${strip(v.cx - cw / 2, cw, v.maxD, (k) => tempAt(v, k))}
-      <path d="M${(v.cx - 4).toFixed(1)},${T - 7}L${(v.cx + 4).toFixed(1)},${T - 7}L${v.cx.toFixed(1)},${T - 1}Z"
-            fill="#E6F1F6"/></g>`;
+      ${strip(v.cx - cw / 2, cw, v.maxD, (k) => tempAt(v, k))}</g>`;
+    marks += `<path d="M${(v.cx - 4).toFixed(1)},${T - 7}L${(v.cx + 4).toFixed(1)},${T - 7}L${v.cx.toFixed(1)},${T - 1}Z"
+            fill="#E6F1F6"/>`;
   }
 
-  const step = maxD <= 12 ? 3 : maxD <= 30 ? 5 : maxD <= 60 ? 10 : 20;
+  const step = [0.5, 1, 2, 3, 5, 10, 20].find((n) => (d1 - d0) / n <= 8) || 20;
   let grid = '';
-  for (let d = 0; d <= depthTop; d += step) {
+  for (let d = Math.ceil(d0 / step) * step; d <= d1 + 1e-9; d += step) {
     const py = y(d).toFixed(1);
     grid += `<line x1="${L}" y1="${py}" x2="${W - R}" y2="${py}" stroke="#15303F"/>`
          +  `<text x="${L - 8}" y="${+py + 4}" fill="#668595" font-size="11"
-                   text-anchor="end">${d}</text>`;
+                   text-anchor="end">${+d.toFixed(1)}</text>`;
   }
 
   // Date ticks on calendar boundaries: days for a short span, otherwise the
@@ -358,18 +369,101 @@ DL.siteProfile = (siteDives) => {
         +  `<text x="${bx + bw + 4}" y="${(by + bh).toFixed(1)}" fill="#9DB6C4" font-size="11">${lo.toFixed(1)}°</text>`;
   }
 
+  // The plot area's scales ride along on the element, so the page can turn
+  // a drag on the chart back into dates and depths without redrawing it.
+  const clip = `sp-clip-${Math.round(t0)}-${Math.round(d0 * 10)}`;
+  const zoomNote = zoomed
+    ? `<span>Zoomed: ${DL.prettyDate(new Date(t0).toISOString().slice(0, 10))} – `
+      + `${DL.prettyDate(new Date(t1).toISOString().slice(0, 10))}, `
+      + `${DL.num(d0)}–${DL.num(d1)} m</span>`
+    : '';
   return `<div class="chart">
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
-         aria-label="Depth of ${dives.length} dive(s) by date, coloured by water temperature from ${lo.toFixed(1)} to ${hi.toFixed(1)} degrees Celsius">
-      ${grid}<g opacity=".78">${fill}</g>${cols}${bar}
+    <svg class="site-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
+         data-t0="${t0}" data-t1="${t1}" data-d0="${d0}" data-d1="${d1}"
+         data-plot="${L},${T},${gw},${gh}"
+         aria-label="Depth of ${visible.length} dive(s) by date, coloured by water temperature from ${lo.toFixed(1)} to ${hi.toFixed(1)} degrees Celsius">
+      <defs><clipPath id="${clip}"><rect x="${L}" y="${T}" width="${gw}" height="${gh}"/></clipPath></defs>
+      ${grid}<g clip-path="url(#${clip})"><g opacity=".78">${fill}</g>${cols}</g>${marks}${bar}
       <text x="${L - 8}" y="${H - 9}" fill="#668595" font-size="10.5" text-anchor="end">m</text>
     </svg>
     <div class="chart-legend">
       ${hasTemp ? '<span>▼ marks each dive · colour is water temperature · months with several dives are interpolated day by day</span>'
                 : '<span>No temperature recorded here</span>'}
-      <span>${dives.length} dive${dives.length === 1 ? '' : 's'} · tap one to open it</span>
+      ${zoomNote}
+      <span>${visible.length} dive${visible.length === 1 ? '' : 's'}<span class="no-export"> · tap one to open it</span></span>
     </div>
   </div>`;
+};
+
+/**
+ * Saves a chart as a file: the SVG as drawn, on its own background, with a
+ * title above and the legend below so the picture explains itself away from
+ * the page. PNG is rendered at twice the drawn size for print and slides.
+ */
+DL.exportChart = (chartEl, title, format = 'png') => {
+  const svg = chartEl && chartEl.querySelector('svg');
+  if (!svg) return;
+  const [, , W, H] = svg.getAttribute('viewBox').split(/\s+/).map(Number);
+  // The legend's first entry explains the colours; the rest (zoom, count)
+  // go on a second line. Hints about tapping mean nothing in a file.
+  const entries = [...chartEl.querySelectorAll('.chart-legend > span')].map((s) => {
+    const c = s.cloneNode(true);
+    c.querySelectorAll('.no-export').forEach((n) => n.remove());
+    return c.textContent.trim();
+  }).filter(Boolean);
+  const legend = [entries[0] || '', entries.slice(1).join('   ·   ')];
+  const TOP = 36, BOTTOM = 46;
+
+  const out = svg.cloneNode(true);
+  out.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  out.setAttribute('viewBox', `0 ${-TOP} ${W} ${H + TOP + BOTTOM}`);
+  out.setAttribute('width', W);
+  out.setAttribute('height', H + TOP + BOTTOM);
+  out.setAttribute('font-family', 'Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif');
+  out.removeAttribute('class');
+  const NS = 'http://www.w3.org/2000/svg';
+  const add = (tag, attrs, text) => {
+    const el = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    if (text != null) el.textContent = text;
+    return el;
+  };
+  out.insertBefore(add('rect', { x: 0, y: -TOP, width: W, height: H + TOP + BOTTOM, fill: '#0C202D' }),
+                   out.firstChild);
+  out.appendChild(add('text', { x: 16, y: -12, fill: '#F2F7FA', 'font-size': 16, 'font-weight': 600 },
+                      `${title} — water temperature by date and depth`));
+  legend.forEach((line, i) => line && out.appendChild(add('text', {
+    x: W / 2, y: H + 16 + i * 16, fill: '#9DB6C4', 'font-size': 11, 'text-anchor': 'middle',
+  }, line)));
+  out.appendChild(add('text', { x: W - 12, y: -12, fill: '#668595', 'font-size': 10.5,
+                                'text-anchor': 'end' }, 'DeepLog'));
+
+  const xml = new XMLSerializer().serializeToString(out);
+  const slug = String(title).toLowerCase().normalize('NFKD').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '');
+  const save = (blob, ext) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `deeplog-${slug || 'site'}-temperature.${ext}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  };
+
+  if (format === 'svg') {
+    save(new Blob([xml], { type: 'image/svg+xml' }), 'svg');
+    return;
+  }
+  const img = new Image();
+  img.onload = () => {
+    const scale = 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = W * scale; canvas.height = (H + TOP + BOTTOM) * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0, W, H + TOP + BOTTOM);
+    canvas.toBlob((blob) => blob && save(blob, 'png'), 'image/png');
+  };
+  img.onerror = () => DL.toast && DL.toast('Could not render the image; try SVG instead.');
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
 };
 
 /** A value against time — depth, duration or temperature across the log. */
