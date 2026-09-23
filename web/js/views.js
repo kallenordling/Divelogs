@@ -411,6 +411,7 @@ DL.showSite = (name) => {
 
       ${DL.sectionHead('Temperature profile', `
         <button class="btn btn-quiet btn-sm" data-act="zoom-reset" hidden>Reset zoom</button>
+        <button class="btn btn-ghost btn-sm" data-act="fit">Fit annual cycle</button>
         <button class="btn btn-ghost btn-sm" data-act="export-png">Download PNG</button>
         <button class="btn btn-ghost btn-sm" data-act="export-svg">SVG</button>`)}
       <div id="site-chart"></div>
@@ -476,11 +477,18 @@ DL.showSite = (name) => {
 DL.siteChart = (view, name, ds) => {
   const holder = view.querySelector('#site-chart');
   const reset = view.querySelector('[data-act="zoom-reset"]');
+  const fitBtn = view.querySelector('[data-act="fit"]');
   let zoom = null;
+  let fit = false;
 
   const draw = () => {
-    holder.innerHTML = DL.siteProfile(ds, zoom);
+    // Zoom and fit are independent: fitting a zoomed chart still models the
+    // whole site's readings, then shows the part you are looking at.
+    holder.innerHTML = DL.siteProfile(ds, zoom || fit ? { ...(zoom || {}), fit } : null);
     reset.hidden = !zoom;
+    fitBtn.classList.toggle('btn-primary', fit);
+    fitBtn.classList.toggle('btn-ghost', !fit);
+    fitBtn.textContent = fit ? 'Show dives only' : 'Fit annual cycle';
     const svg = holder.querySelector('svg.site-chart');
     if (svg) bindDrag(svg);
   };
@@ -549,6 +557,7 @@ DL.siteChart = (view, name, ds) => {
   };
 
   reset.addEventListener('click', () => { zoom = null; draw(); });
+  fitBtn.addEventListener('click', () => { fit = !fit; draw(); });
   view.querySelector('[data-act="export-png"]').addEventListener('click', () =>
     DL.exportChart(holder.querySelector('.chart'), name, 'png'));
   view.querySelector('[data-act="export-svg"]').addEventListener('click', () =>

@@ -160,6 +160,117 @@ DL.diveProfile = (samples, recordedMax = null) => {
 };
 
 /**
+ * Fits the yearly cycle of water temperature, one depth band at a time.
+ *
+ * Each band's readings are fitted against the time of year — a mean, a
+ * yearly wave, a second wave for the fact that lakes warm slowly and cool
+ * fast, and a long-term trend once there are years enough to see one. That
+ * turns scattered dives into a continuous field: the model can say what
+ * 12 m was like in February from dives in May and September.
+ *
+ * `points` are {t: ms, k: depth band, c: °C}. The result predicts any day in
+ * any band it could fit, and reports how far the fit sits from the readings.
+ */
+DL.annualCycleFit = (points) => {
+  const YEAR = 365.2425 * 86400000;
+  const byBin = new Map();
+  for (const p of points) {
+    if (!isFinite(p.c)) continue;
+    if (!byBin.has(p.k)) byBin.set(p.k, []);
+    byBin.get(p.k).push(p);
+  }
+
+  // Terms are added only as the readings support them: three for a single
+  // season, five once the shape of the year shows, six when years of dives
+  // can separate a trend from the cycle.
+  const terms = (n, span) => {
+    const list = [
+      (t) => 1,
+      (t) => Math.cos(2 * Math.PI * t / YEAR),
+      (t) => Math.sin(2 * Math.PI * t / YEAR),
+    ];
+    if (n >= 10) {
+      list.push((t) => Math.cos(4 * Math.PI * t / YEAR));
+      list.push((t) => Math.sin(4 * Math.PI * t / YEAR));
+    }
+    if (n >= 14 && span >= 1.5 * YEAR) list.push((t) => t / YEAR);
+    return list;
+  };
+
+  /** Least squares by normal equations, with a nudge to keep them solvable. */
+  const solve = (rows, ys) => {
+    const m = rows[0].length;
+    const A = Array.from({ length: m }, () => new Array(m + 1).fill(0));
+    for (let r = 0; r < rows.length; r++) {
+      for (let i = 0; i < m; i++) {
+        for (let j = 0; j < m; j++) A[i][j] += rows[r][i] * rows[r][j];
+        A[i][m] += rows[r][i] * ys[r];
+      }
+    }
+    for (let i = 0; i < m; i++) A[i][i] += 1e-6 * rows.length;
+
+    for (let i = 0; i < m; i++) {
+      let pivot = i;
+      for (let r = i + 1; r < m; r++) if (Math.abs(A[r][i]) > Math.abs(A[pivot][i])) pivot = r;
+      if (Math.abs(A[pivot][i]) < 1e-12) return null;
+      [A[i], A[pivot]] = [A[pivot], A[i]];
+      for (let r = 0; r < m; r++) {
+        if (r === i) continue;
+        const f = A[r][i] / A[i][i];
+        for (let c = i; c <= m; c++) A[r][c] -= f * A[i][c];
+      }
+    }
+    return A.map((row, i) => row[m] / A[i][i]);
+  };
+
+  const fits = new Map();
+  let sq = 0, used = 0;
+  for (const [k, obs] of byBin) {
+    // Six readings is the fewest that can show a year rather than noise; a
+    // band dived once or twice is left out instead of guessed at.
+    if (obs.length < 6) continue;
+    const times = obs.map((o) => o.t);
+    const t0 = Math.min(...times);
+    const span = Math.max(...times) - t0;
+    const basis = terms(obs.length, span);
+    const rows = obs.map((o) => basis.map((f) => f(o.t - t0)));
+    const coef = solve(rows, obs.map((o) => o.c));
+    if (!coef) continue;
+
+    // Dives cluster in the diving season, so the coldest water of the year
+    // is often never measured; the fit has to be free to reach it. It may
+    // carry the swing it can see one more swing beyond the readings, and no
+    // further — and never outside what water can be.
+    const seen0 = Math.min(...obs.map((o) => o.c));
+    const seen1 = Math.max(...obs.map((o) => o.c));
+    const swing = Math.max(1, seen1 - seen0);
+    const lo = Math.max(-2, seen0 - swing);
+    const hi = Math.min(40, seen1 + swing);
+    fits.set(k, { basis, coef, t0, lo, hi });
+
+    for (let i = 0; i < obs.length; i++) {
+      const pred = rows[i].reduce((a, v, j) => a + v * coef[j], 0);
+      sq += (pred - obs[i].c) ** 2; used++;
+    }
+  }
+
+  const predict = (t, k) => {
+    const f = fits.get(k);
+    if (!f) return NaN;
+    const v = f.basis.reduce((a, fn, j) => a + fn(t - f.t0) * f.coef[j], 0);
+    return Math.max(f.lo, Math.min(f.hi, v));
+  };
+
+  return {
+    predict,
+    bins: fits,
+    deepest: fits.size ? Math.max(...fits.keys()) : -1,
+    rmse: used ? Math.sqrt(sq / used) : NaN,
+    readings: used,
+  };
+};
+
+/**
  * Every dive at one site on one chart: the date along the bottom, depth down
  * the side, and each dive a column coloured by the water temperature it
  * recorded at each depth. Read across, it shows how the water column changes
@@ -167,7 +278,9 @@ DL.diveProfile = (samples, recordedMax = null) => {
  *
  * `view` zooms in: {t0, t1} is the date range in ms and {d0, d1} the depth
  * range in metres. The colour scale stays that of the whole site, so a
- * zoomed chart reads the same as the full one.
+ * zoomed chart reads the same as the full one. With `fit`, the gaps are
+ * filled by the fitted yearly cycle instead of joining neighbouring dives,
+ * which carries the chart through the winters between diving seasons.
  */
 DL.siteProfile = (siteDives, view = null) => {
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -197,7 +310,7 @@ DL.siteProfile = (siteDives, view = null) => {
   const hi = hasTemp ? Math.max(...temps) : 1;
 
   const maxD = Math.max(...dives.map((v) => v.maxD));
-  const zoomed = !!view;
+  const zoomed = !!(view && view.t0 != null);
   const d0 = zoomed ? view.d0 : 0;
   const d1 = zoomed ? view.d1 : maxD * 1.1;
 
@@ -276,16 +389,32 @@ DL.siteProfile = (siteDives, view = null) => {
     return out;
   };
 
-  // A day between two dives no more than two weeks apart takes a value of
-  // its own: depth and the temperature at each depth blended by how far
-  // through the gap it falls. Across a longer gap the water is left blank,
-  // because nothing was measured in between.
-  const MAX_GAP = 14 * DAY;
+  // With a fit, every day of the range gets its modelled water column,
+  // down to the deepest band the readings could support.
+  const model = view && view.fit ? DL.annualCycleFit(
+    dives.flatMap((v) => v.prof
+      .map((c, k) => ({ t: v.when, k, c }))
+      .filter((o) => isFinite(o.c)))) : null;
 
   let fill = '';
+  if (model && model.deepest >= 0) {
+    const depth = Math.min((model.deepest + 1) * bin, maxD);
+    for (let px = L; px < L + gw; px += 3) {
+      const at = t0 + ((px + 1.5 - L) / gw) * (t1 - t0);
+      fill += strip(px, 3.6, depth, (k) => model.predict(at, k));
+    }
+  }
+
+  // Without one, a day between two dives no more than two weeks apart takes
+  // a value of its own: depth and the temperature at each depth blended by
+  // how far through the gap it falls. Across a longer gap the water is left
+  // blank, because nothing was measured in between.
+  const MAX_GAP = 14 * DAY;
+
   const startDay = new Date(first); startDay.setHours(0, 0, 0, 0);
   let i = 0;
   // Only the days on screen are drawn; the dives either side still count.
+  if (model) startDay.setTime(Math.min(last, t1) + DAY);      // the fit covers it all
   while (startDay.getTime() + DAY < t0) startDay.setDate(startDay.getDate() + 1);
   for (let day = startDay.getTime(); day < Math.min(last, t1); day += DAY) {
     const noon = day + DAY / 2;
@@ -384,8 +513,10 @@ DL.siteProfile = (siteDives, view = null) => {
       <text x="${L - 8}" y="${H - 9}" fill="#668595" font-size="10.5" text-anchor="end">m</text>
     </svg>
     <div class="chart-legend">
-      ${hasTemp ? '<span>▼ marks each dive · colour is water temperature · dives up to two weeks apart are joined day by day</span>'
-                : '<span>No temperature recorded here</span>'}
+      ${!hasTemp ? '<span>No temperature recorded here</span>'
+        : model ? `<span>▼ marks each dive · colour is the fitted yearly cycle`
+            + `${isFinite(model.rmse) ? `, within ${model.rmse.toFixed(1)} °C of the ${model.readings} readings` : ''}</span>`
+        : '<span>▼ marks each dive · colour is water temperature · dives up to two weeks apart are joined day by day</span>'}
       ${zoomNote}
       <span>${visible.length} dive${visible.length === 1 ? '' : 's'}<span class="no-export"> · tap one to open it</span></span>
     </div>

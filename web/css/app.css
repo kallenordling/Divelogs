@@ -581,6 +581,9 @@ select.input {
 }
 .leaflet-bar a:hover { background: #17394F; color: var(--text); }
 
+/* Buttons set display, which would otherwise beat the hidden attribute. */
+[hidden] { display: none !important; }
+
 /* ── Import ──────────────────────────────────────────────────────────────── */
 
 .drop {
