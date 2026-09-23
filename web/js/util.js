@@ -89,10 +89,21 @@ DL.el = (id) => document.getElementById(id);
 DL.fill = (node, html) => { if (node) node.innerHTML = html; return node; };
 
 /** Brief message at the bottom of the screen. */
-DL.toast = (message, kind = '') => {
+DL.toast = (message, kind = '', action = null) => {
   const host = DL.el('toast-host');
   if (!host) return;
-  host.innerHTML = `<div class="toast ${kind}">${DL.esc(message)}</div>`;
+  // An action turns the toast into something to answer, so it stays until
+  // it is answered or dismissed — a passing message is easy to miss.
+  host.innerHTML = `<div class="toast ${kind}">${DL.esc(message)}${action
+    ? ` <button class="btn btn-sm btn-primary" data-toast-act>${DL.esc(action.label)}</button>`
+    : ''}</div>`;
   clearTimeout(DL._toastTimer);
-  DL._toastTimer = setTimeout(() => { host.innerHTML = ''; }, 3200);
+  if (!action) {
+    DL._toastTimer = setTimeout(() => { host.innerHTML = ''; }, 3200);
+    return;
+  }
+  host.querySelector('[data-toast-act]').addEventListener('click', () => {
+    host.innerHTML = '';
+    action.run();
+  });
 };

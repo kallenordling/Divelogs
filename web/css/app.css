@@ -557,6 +557,8 @@ select.input {
   box-shadow: var(--shadow); animation: fade var(--dur) var(--ease);
   max-width: calc(100vw - 32px);
 }
+.toast { display: flex; align-items: center; gap: 10px; }
+.toast .btn { padding: 4px 12px; }
 .toast.err { border-color: rgba(239,107,107,.5); color: var(--danger); }
 .toast.ok  { border-color: rgba(101,193,140,.5); color: var(--success); }
 @media (min-width: 860px) { .toast { bottom: 24px; } }

@@ -159,7 +159,10 @@ if ('serviceWorker' in navigator) {
         if (!sw) return;
         sw.addEventListener('statechange', () => {
           if (sw.state === 'installed' && navigator.serviceWorker.controller) {
-            DL.toast('A new version is ready — reload to update');
+            DL.toast('A new version of DeepLog is ready', 'ok', {
+              label: 'Update now',
+              run: () => { sw.postMessage('skip-waiting'); location.reload(); },
+            });
           }
         });
       });
