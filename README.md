@@ -53,6 +53,10 @@ services too — UDDF (Shearwater Cloud, Suunto DM5, MacDive), Subsurface XML,
 Suunto's own SML, JSON and `.sde`/SDM exports, and CSV — through **Import** on
 the dives screen. The parsers are checked against real exports from the
 Subsurface project's test files as well as hand-written fixtures.
+Site pages show water temperature averaged across every diver who logged a
+dive there, and anyone can explore the sites and that data without an account;
+dives themselves stay private. That needs
+[`supabase/public_water.sql`](supabase/public_water.sql) run once.
 See [`web/README.md`](web/README.md)
 for the layout, the tests, and the row-level-security policies worth
 confirming before sharing the URL.

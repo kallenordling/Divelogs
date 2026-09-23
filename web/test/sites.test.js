@@ -151,7 +151,7 @@ function boot(dives) {
   await tick(3);
   const s2 = $('#view-site');
   ok('an undived site still opens', /Kronprins Gustav Adolf/.test(s2.textContent));
-  ok('it says there are no dives yet', /No dives at this site yet/.test(s2.textContent),
+  ok('it says nothing has been recorded there', /Nothing recorded at this site yet/.test(s2.textContent),
      s2.textContent.slice(0, 200));
   ok('it offers to log one', !!s2.querySelector('[data-act="log"]'));
   ok('it shows the catalogue description', /sank 1788/.test(s2.textContent));

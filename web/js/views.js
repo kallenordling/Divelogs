@@ -25,6 +25,19 @@ DL.renderDives = async () => {
   const view = DL.el('view-dives');
   const dives = DL.state.dives;
 
+  if (!DL.signedIn()) {
+    view.innerHTML = `
+      <h1 class="page-title">Your diving</h1>
+      ${DL.emptyState({
+        icon: 'log', title: 'Sign in to keep your own log',
+        detail: 'Dive sites and the water readings divers have shared are open to everyone. '
+              + 'Your own dives, with their profiles, need an account.',
+        action: '<button class="btn btn-primary" data-act="signin">Sign in</button>',
+      })}`;
+    view.querySelector('[data-act="signin"]').addEventListener('click', () => DL.showLogin());
+    return;
+  }
+
   if (!dives.length) {
     view.innerHTML = `
       <h1 class="page-title">Your diving</h1>
@@ -263,6 +276,7 @@ function distanceKm(a, b) {
 
 DL.renderSites = async () => {
   await DL.loadCatalogue();
+  await DL.loadSharedPlaces();
   const view = DL.el('view-sites');
   const groups = DL.groupBySite();
 
@@ -277,6 +291,11 @@ DL.renderSites = async () => {
   }
   for (const e of DL.catalogueSites) {
     if ((e.kind || 'site') !== 'site') continue;      // clubs live on the map
+    const k = DL.fold(e.name);
+    if (!rows.has(k)) rows.set(k, { name: e.name, count: 0, deepest: 0, last: null, entry: e });
+  }
+  // Sites divers have logged that no catalogue lists.
+  for (const e of DL.sharedPlaces) {
     const k = DL.fold(e.name);
     if (!rows.has(k)) rows.set(k, { name: e.name, count: 0, deepest: 0, last: null, entry: e });
   }
@@ -375,13 +394,24 @@ DL.renderSites = async () => {
 
 // ── One site ───────────────────────────────────────────────────────────────
 
-DL.showSite = (name) => {
+DL.showSite = async (name) => {
   const ds = DL.divesAtSite(name);
   const row = DL.siteRow(name, ds);
   const dived = ds.length > 0;
   const entry = DL.catalogueEntry(name);
 
-  const temps = ds.flatMap((d) => [d.temp_min, d.temp_max])
+  // What the water was like here, averaged across everyone who logged a dive
+  // at this site — readable signed out. Your own dives are the fallback when
+  // the database has no shared view (see supabase/public_water.sql).
+  const water = await DL.fetchSiteWater(name).catch(() => null);
+  const shared = water && water.length ? DL.waterToProfiles(water, ds) : null;
+  const chartData = shared || ds;
+  const sharedTemps = shared
+    ? shared.flatMap((d) => d.samples.map((smp) => smp[2])).filter((c) => isFinite(c))
+    : [];
+
+  const temps = (shared ? sharedTemps
+    : ds.flatMap((d) => [d.temp_min, d.temp_max]))
     .filter((t) => t != null && isFinite(t)).map(Number);
   const totalTime = ds.reduce((a, d) => a + (Number(d.duration) || 0), 0);
   const pos = dived ? DL.coordsFor(ds[0])
@@ -407,23 +437,27 @@ DL.showSite = (name) => {
         <div class="cell"><div class="k">Deepest</div><div class="v tnum">${DL.num(row.deepest)}<small> m</small></div></div>
         <div class="cell"><div class="k">Total time</div><div class="v tnum">${DL.longDuration(totalTime)}</div></div>
         <div class="cell"><div class="k">Last dived</div><div class="v tnum">${DL.prettyDate(row.last)}</div></div>
-      </div>
+      </div>` : ''}
 
+    ${chartData.length ? `
       ${DL.sectionHead('Temperature profile', `
         <button class="btn btn-quiet btn-sm" data-act="zoom-reset" hidden>Reset zoom</button>
         <button class="btn btn-ghost btn-sm" data-act="fit">Fit annual cycle</button>
         <button class="btn btn-ghost btn-sm" data-act="export-png">Download PNG</button>
         <button class="btn btn-ghost btn-sm" data-act="export-svg">SVG</button>`)}
       <div id="site-chart"></div>
-      <div class="small" style="margin-top:6px">Drag across the chart to zoom in on a period and depth.</div>
+      <div class="small" style="margin-top:6px">
+        ${shared ? 'Averaged across every diver who logged this site. ' : ''}Drag across the chart to zoom in on a period and depth.
+      </div>
 
       <div class="metrics-grid" style="margin-top:20px">
         ${temps.length ? DL.metric({ label: 'Coldest', value: DL.num(Math.min(...temps)), unit: '°C' }) : ''}
         ${temps.length ? DL.metric({ label: 'Warmest', value: DL.num(Math.max(...temps)), unit: '°C' }) : ''}
-        ${DL.metric({ label: 'Average depth',
-          value: DL.num(ds.reduce((a, d) => a + (Number(d.maxdepth) || 0), 0) / ds.length), unit: 'm' })}
-      </div>
+        ${DL.metric({ label: 'Deepest measured',
+          value: DL.num(Math.max(...chartData.map((d) => Number(d.maxdepth) || 0))), unit: 'm' })}
+      </div>` : ''}
 
+    ${dived ? `
       ${DL.sectionHead('Dives here')}
       <div class="scroll-x"><table class="table">
         <thead><tr><th>Date</th><th>Depth</th><th>Duration</th><th>Water</th></tr></thead>
@@ -432,15 +466,19 @@ DL.showSite = (name) => {
             <td>${DL.prettyDate(d.date)}</td><td>${DL.num(d.maxdepth)} m</td>
             <td>${DL.duration(d.duration)}</td>
             <td>${d.temp_min != null ? DL.num(d.temp_min) + ' °C' : '–'}</td></tr>`).join('')}
-        </tbody></table></div>
-    ` : `
+        </tbody></table></div>` : ''}
+
+    ${!dived && !chartData.length ? `
       <div style="margin-top:24px">
         ${DL.emptyState({
-          icon: 'pin', title: 'No dives at this site yet',
-          detail: 'When you log a dive here it will appear with its profile and temperatures.',
-          action: '<button class="btn btn-primary" data-act="log">Log a dive here</button>',
+          icon: 'pin', title: 'Nothing recorded at this site yet',
+          detail: DL.signedIn()
+            ? 'When you log a dive here it will appear with its profile and temperatures.'
+            : 'No diver has shared water readings from here yet.',
+          action: DL.signedIn()
+            ? '<button class="btn btn-primary" data-act="log">Log a dive here</button>' : '',
         })}
-      </div>`}
+      </div>` : ''}
 
     ${entry && entry.notes ? `${DL.sectionHead('About this site')}
       <div class="journal">${DL.esc(entry.notes)}</div>` : ''}
@@ -464,7 +502,7 @@ DL.showSite = (name) => {
   view.querySelectorAll('tr[data-dive]').forEach((tr) =>
     tr.addEventListener('click', () => DL.showDive(tr.dataset.dive)));
 
-  if (dived) DL.siteChart(view, name, ds);
+  if (chartData.length) DL.siteChart(view, name, chartData);
 
   DL.go('site');
 };
@@ -578,6 +616,18 @@ DL.renderStats = async () => {
   await DL.loadCatalogue();
   const view = DL.el('view-stats');
   const dives = DL.state.dives;
+
+  if (!DL.signedIn()) {
+    view.innerHTML = `
+      <h1 class="page-title">Statistics</h1>
+      ${DL.emptyState({
+        icon: 'chart', title: 'Sign in to see your statistics',
+        detail: 'These count your own dives, so they need an account.',
+        action: '<button class="btn btn-primary" data-act="signin">Sign in</button>',
+      })}`;
+    view.querySelector('[data-act="signin"]').addEventListener('click', () => DL.showLogin());
+    return;
+  }
 
   if (!dives.length) {
     view.innerHTML = `<h1 class="page-title">Statistics</h1>

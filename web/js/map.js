@@ -21,6 +21,11 @@ const MINE = { radius: 8, color: '#07141F', weight: 2.5, fillColor: '#39C6E8', f
 
 DL.renderMap = async () => {
   await DL.loadCatalogue();
+  // Sites other divers logged come from the network; the map must not wait
+  // on them to draw the catalogue it already has.
+  DL.loadSharedPlaces().then((places) => {
+    if (places.length && map) { drawCatalogue(); paintNote(); }
+  }).catch(() => { /* the map works without them */ });
   const view = DL.el('view-map');
 
   // Build the shell once; re-entering the tab must not throw the map away.
@@ -136,7 +141,10 @@ function drawCatalogue() {
   const tally = { site: 0, club: 0, lodging: 0 };
   let inView = 0, drawn = 0;
 
-  for (const s of DL.catalogueSites) {
+  // The catalogue, plus sites divers have logged that it does not list.
+  const known = new Set(DL.catalogueSites.map((s) => DL.fold(s.name)));
+  for (const s of DL.catalogueSites.concat(
+         DL.sharedPlaces.filter((p) => !known.has(DL.fold(p.name))))) {
     const kind = s.kind || 'site';
     if (kind === 'site' ? !layers.sites : !layers.services) continue;
     if (!b.contains([s.lat, s.lon])) continue;

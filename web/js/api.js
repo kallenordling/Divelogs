@@ -84,9 +84,12 @@ async function refreshSession() {
 
 DL.rest = async function rest(path, opts = {}) {
   const { retry = true, method = 'GET', body = null, prefer = null } = opts;
+  // Signed out, the anon key is the whole identity: it reaches the public
+  // views and nothing else, because row-level security answers to the token.
+  const token = DL.state.session ? DL.state.session.access_token : ANON_KEY;
   const headers = {
     apikey: ANON_KEY,
-    Authorization: `Bearer ${DL.state.session.access_token}`,
+    Authorization: `Bearer ${token}`,
     Accept: 'application/json',
   };
   if (body) headers['Content-Type'] = 'application/json';
@@ -118,6 +121,66 @@ DL.rest = async function rest(path, opts = {}) {
 // ── Dives ──────────────────────────────────────────────────────────────────
 
 DL.fetchDives = () => DL.rest('dives?select=*&order=date.desc,time.desc');
+
+// ── Shared water data ──────────────────────────────────────────────────────
+//
+// Temperatures at a site, averaged across every diver who logged one there,
+// by day and depth band. Readable signed out. Returns null when the database
+// has no such view yet (see supabase/public_water.sql), so callers can fall
+// back to the dives they hold themselves rather than showing an error.
+
+const missingView = (e) => /(\b404\b|does not exist|schema cache)/i.test(e.message || '');
+
+DL.fetchSiteWater = async (siteName) => {
+  try {
+    return await DL.rest('site_water?select=date,depth_m,temp_c,readings' +
+      `&site_name=eq.${encodeURIComponent(siteName)}&order=date.asc,depth_m.asc`);
+  } catch (e) {
+    if (missingView(e)) return null;
+    throw e;
+  }
+};
+
+/** Sites people have logged, for the map and the site list. */
+DL.fetchSitePlaces = async () => {
+  try { return await DL.rest('site_places?select=site_name,lat,lon'); }
+  catch (e) { if (missingView(e)) return null; throw e; }
+};
+
+/**
+ * Averaged readings as profiles the chart can draw: one column per day, its
+ * depth bands filled with the day's average temperature. Where a day is one
+ * of your own dives, it keeps that dive's id so tapping still opens it.
+ */
+DL.waterToProfiles = (rows, ownDives = []) => {
+  const mine = new Map(ownDives.map((d) => [d.date, d]));
+  const byDate = new Map();
+  for (const r of rows) {
+    if (!byDate.has(r.date)) byDate.set(r.date, []);
+    byDate.get(r.date).push(r);
+  }
+
+  const out = [];
+  for (const [date, bands] of byDate) {
+    bands.sort((a, z) => a.depth_m - z.depth_m);
+    const own = mine.get(date);
+    const temps = bands.map((b) => b.temp_c).filter((c) => isFinite(c));
+    out.push({
+      id: own ? own.id : null,
+      date,
+      time: own ? own.time : '12:00:00',
+      // Mid-band, so a band of 0–1 m plots where it was measured.
+      maxdepth: bands[bands.length - 1].depth_m + 0.5,
+      duration: own ? own.duration : 0,
+      temp_min: temps.length ? Math.min(...temps) : null,
+      temp_max: temps.length ? Math.max(...temps) : null,
+      samples: bands.map((b, i) => [i * 1000, b.depth_m + 0.5, b.temp_c]),
+      readings: bands.reduce((a, b) => a + (b.readings || 0), 0),
+      averaged: true,
+    });
+  }
+  return out.sort((a, z) => a.date.localeCompare(z.date));
+};
 
 /** Columns the table actually has. Anything else is silently dropped. */
 const DIVE_COLUMNS = [

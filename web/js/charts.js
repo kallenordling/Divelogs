@@ -438,8 +438,9 @@ DL.siteProfile = (siteDives, view = null) => {
     const dt = [Number(v.d.temp_min), Number(v.d.temp_max)].filter(validTemp);
     const label = `${DL.prettyDate(v.d.date)} ${DL.hhmm(v.d.time)} · ${DL.num(v.maxD)} m`
       + (dt.length ? ` · ${DL.num(Math.min(...dt))}–${DL.num(Math.max(...dt))} °C` : '');
-    cols += `<g data-dive="${DL.esc(String(v.d.id))}" style="cursor:pointer">
-      <title>${DL.esc(label)}</title>
+    const opens = v.d.id != null;
+    cols += `<g${opens ? ` data-dive="${DL.esc(String(v.d.id))}" style="cursor:pointer"` : ''}>
+      <title>${DL.esc(label)}${v.d.averaged && !opens ? ' · averaged' : ''}</title>
       ${strip(v.cx - cw / 2, cw, v.maxD, (k) => tempAt(v, k))}</g>`;
     marks += `<path d="M${(v.cx - 4).toFixed(1)},${T - 7}L${(v.cx + 4).toFixed(1)},${T - 7}L${v.cx.toFixed(1)},${T - 1}Z"
             fill="#E6F1F6"/>`;

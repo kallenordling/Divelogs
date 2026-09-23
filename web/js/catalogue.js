@@ -8,6 +8,22 @@ const DL = window.DL;
 DL.catalogue = null;        // folded name -> { lat, lon }
 DL.catalogueSites = [];     // full entries, for the map, search and the picker
 
+// Sites divers have logged that no catalogue lists, from the shared view in
+// the database. Loaded once; empty when the database has no such view yet.
+DL.sharedPlaces = [];
+let placesLoaded = false;
+
+DL.loadSharedPlaces = async function loadSharedPlaces() {
+  if (placesLoaded) return DL.sharedPlaces;
+  placesLoaded = true;
+  const rows = await DL.fetchSitePlaces().catch(() => null);
+  DL.sharedPlaces = (rows || [])
+    .filter((r) => r.site_name && isFinite(r.lat) && isFinite(r.lon))
+    .map((r) => ({ name: r.site_name, lat: r.lat, lon: r.lon, kind: 'site',
+                   desc: 'Logged by divers', shared: true }));
+  return DL.sharedPlaces;
+};
+
 /**
  * Two catalogues are merged:
  *

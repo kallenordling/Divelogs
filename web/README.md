@@ -159,3 +159,29 @@ create policy "delete own dives" on dives for delete using (auth.uid() = user_id
 An unauthenticated read of the table currently returns `[]` rather than rows,
 which is consistent with RLS being on — but that is worth confirming in the
 Supabase dashboard rather than inferring, since an empty table looks identical.
+
+## Shared water, and visiting without an account
+
+Site pages show water temperature **averaged across every diver who logged a
+dive there**, and anyone may read that without signing in — "Explore dive
+sites without signing in" on the sign-in screen, or simply the Sites and Map
+tabs. Dives themselves stay private: a visitor never reads the `dives` table,
+and the app does not ask for it.
+
+What makes that possible is two aggregate views, in
+[`supabase/public_water.sql`](../supabase/public_water.sql). **Run that file
+once** in the Supabase SQL editor; until it exists, the app falls back to
+showing each person only their own dives, which is how it behaved before.
+
+- `site_water` — one row per site, date and whole metre of depth, with the
+  average temperature and how many samples went into it.
+- `site_places` — the position of sites divers have logged, so ones the
+  bundled catalogue does not know still appear on the map.
+
+Neither view exposes an owner, a dive, a depth reached or a duration. A view
+runs with its owner's rights, so it reads across all rows while `dives` itself
+stays locked down — which is the point, and the reason nothing but aggregates
+may be added to it.
+
+The site chart uses those averages when they exist, marking the days dives
+were made; tapping a day opens the dive only when it is one of yours.

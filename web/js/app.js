@@ -29,6 +29,8 @@ DL.navigate = async (name) => {
 
 // ── Sign in ────────────────────────────────────────────────────────────────
 
+DL.showLogin = (message = '', kind = '') => showLogin(message, kind);
+
 function showLogin(message = '', kind = '') {
   DL.el('login-view').classList.remove('hidden');
   DL.el('app-view').classList.add('hidden');
@@ -43,19 +45,28 @@ function signOut() {
   DL.resetMap();
   showLogin();
 }
+
+/** Signed in, you have a log; signed out, you can still explore the water. */
+DL.signedIn = () => !!(DL.state.session && DL.state.session.access_token);
 DL.onSessionLost = signOut;
 
 async function enterApp() {
   DL.el('login-view').classList.add('hidden');
   DL.el('app-view').classList.remove('hidden');
 
-  const email = DL.state.session.email || '';
+  const signedIn = DL.signedIn();
+  const email = signedIn ? (DL.state.session.email || '') : '';
   const acct = DL.el('btn-account');
-  acct.textContent = (email[0] || '?').toUpperCase();
-  acct.title = email;
+  acct.textContent = signedIn ? (email[0] || '?').toUpperCase() : '↪';
+  acct.title = signedIn ? email : 'Sign in';
 
-  await DL.navigate('dives');
+  // Logging a dive needs somewhere to put it.
+  for (const id of ['nav-log', 'tab-log']) DL.el(id).classList.toggle('hidden', !signedIn);
+
+  // A visitor comes for the sites, not for an empty log.
+  await DL.navigate(signedIn ? 'dives' : 'sites');
 }
+DL.enterApp = enterApp;
 
 async function reload() {
   DL.state.dives = await DL.fetchDives();
@@ -103,7 +114,10 @@ document.querySelectorAll('[data-nav]').forEach((b) =>
 DL.el('nav-log').addEventListener('click', () => DL.openLogDive());
 DL.el('tab-log').addEventListener('click', () => DL.openLogDive());
 
+DL.el('btn-explore').addEventListener('click', () => enterApp());
+
 DL.el('btn-account').addEventListener('click', async () => {
+  if (!DL.signedIn()) return showLogin();
   const email = DL.state.session ? DL.state.session.email : '';
   const ok = await DL.confirmSheet({
     title: 'Sign out?',
