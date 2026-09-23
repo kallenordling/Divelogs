@@ -428,7 +428,9 @@ DL.showSite = async (name) => {
       ${type ? `<span class="chip type">${DL.esc(type)}</span>` : ''}
       ${dived
         ? `<span class="chip dived">${DL.icon('check')} Dived ${ds.length} time${ds.length === 1 ? '' : 's'}</span>`
-        : '<span class="chip">Not dived yet</span>'}
+        : shared
+          ? `<span class="chip">Readings from ${shared.length} day${shared.length === 1 ? '' : 's'}</span>`
+          : '<span class="chip">Not dived yet</span>'}
     </div>
 
     ${dived ? `

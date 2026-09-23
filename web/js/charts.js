@@ -519,7 +519,10 @@ DL.siteProfile = (siteDives, view = null) => {
             + `${isFinite(model.rmse) ? `, within ${model.rmse.toFixed(1)} °C of the ${model.readings} readings` : ''}</span>`
         : '<span>▼ marks each dive · colour is water temperature · dives up to two weeks apart are joined day by day</span>'}
       ${zoomNote}
-      <span>${visible.length} dive${visible.length === 1 ? '' : 's'}<span class="no-export"> · tap one to open it</span></span>
+      <span>${visible.length} ${visible.some((v) => v.d.averaged)
+          ? `day${visible.length === 1 ? '' : 's'} with readings`
+          : `dive${visible.length === 1 ? '' : 's'}`}${visible.some((v) => v.d.id != null)
+          ? '<span class="no-export"> · tap one to open it</span>' : ''}</span>
     </div>
   </div>`;
 };
