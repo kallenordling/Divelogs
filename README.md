@@ -50,7 +50,9 @@ free on GitHub Pages at
 **<https://kallenordling.github.io/Divelogs/>**, and installable to the
 home screen on both Android and iPhone. It reads dives exported from other
 services too — UDDF (Shearwater Cloud, Suunto DM5, MacDive), Subsurface XML,
-Suunto SML and `.sde`, and CSV — through **Import** on the dives screen.
+Suunto's own SML, JSON and `.sde`/SDM exports, and CSV — through **Import** on
+the dives screen. The parsers are checked against real exports from the
+Subsurface project's test files as well as hand-written fixtures.
 See [`web/README.md`](web/README.md)
 for the layout, the tests, and the row-level-security policies worth
 confirming before sharing the URL.

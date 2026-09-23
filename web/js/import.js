@@ -104,7 +104,14 @@ const fromSamples = (row) => {
 const kids = (node, name) => [...node.children].filter((c) => c.localName === name);
 const kid = (node, name) => kids(node, name)[0] || null;
 const deep = (node, name) => [...node.getElementsByTagName('*')].filter((c) => c.localName === name);
+// Direct children only: a descendant search per field turns a file with
+// thousands of sample points into minutes of work.
 const textOf = (node, name) => {
+  const el = node && kid(node, name);
+  return el ? el.textContent.trim() : '';
+};
+/** For header blocks, which are small and nest differently between versions. */
+const textIn = (node, name) => {
   const el = node && (kid(node, name) || deep(node, name)[0]);
   return el ? el.textContent.trim() : '';
 };
@@ -125,7 +132,7 @@ function parseUddf(doc) {
   for (const site of deep(root, 'site')) {
     const geo = kid(site, 'geography');
     sites.set(site.getAttribute('id'), {
-      name: textOf(site, 'name'),
+      name: textIn(site, 'name'),
       lat: geo ? parseFloat(textOf(geo, 'latitude')) : NaN,
       lon: geo ? parseFloat(textOf(geo, 'longitude')) : NaN,
     });
@@ -145,7 +152,7 @@ function parseUddf(doc) {
   for (const dive of deep(root, 'dive')) {
     const before = kid(dive, 'informationbeforedive');
     const after = kid(dive, 'informationafterdive');
-    const when = splitDateTime(textOf(before, 'datetime') || dive.getAttribute('datetime'));
+    const when = splitDateTime(textIn(before, 'datetime') || dive.getAttribute('datetime'));
     if (!when) continue;
 
     const samples = [];
@@ -169,11 +176,11 @@ function parseUddf(doc) {
 
     rows.push(fromSamples(diveRow({
       ...when,
-      maxdepth: parseFloat(textOf(after, 'greatestdepth')) || null,
-      avgdepth: parseFloat(textOf(after, 'averagedepth')) || null,
-      duration: Math.round(parseFloat(textOf(after, 'diveduration'))) || null,
-      temp_min: toCelsius(textOf(after, 'lowesttemperature')),
-      temp_surface: toCelsius(textOf(before, 'airtemperature')),
+      maxdepth: parseFloat(textIn(after, 'greatestdepth')) || null,
+      avgdepth: parseFloat(textIn(after, 'averagedepth')) || null,
+      duration: Math.round(parseFloat(textIn(after, 'diveduration'))) || null,
+      temp_min: toCelsius(textIn(after, 'lowesttemperature')),
+      temp_surface: toCelsius(textIn(before, 'airtemperature')),
       gasmixes: gas,
       samples,
       site_name: site ? site.name : '',
@@ -259,7 +266,7 @@ function parseSuuntoSml(doc) {
   for (const log of deep(doc.documentElement, 'DeviceLog')) {
     const header = kid(log, 'Header');
     if (!header) continue;
-    const when = splitDateTime(textOf(header, 'DateTime'));
+    const when = splitDateTime(textIn(header, 'DateTime'));
     if (!when) continue;
 
     const depth = kid(header, 'Depth');
@@ -275,13 +282,112 @@ function parseSuuntoSml(doc) {
     const device = kid(log, 'Device');
     rows.push(fromSamples(diveRow({
       ...when,
-      maxdepth: depth ? parseFloat(textOf(depth, 'Max')) : null,
-      avgdepth: depth ? parseFloat(textOf(depth, 'Avg')) : null,
-      duration: Math.round(parseFloat(textOf(header, 'Duration'))) || null,
-      temp_min: toCelsius(textOf(header, 'MinTemperature') || textOf(header, 'Temperature')),
-      temp_surface: toCelsius(textOf(header, 'SurfaceTemperature')),
+      maxdepth: depth ? parseFloat(textIn(depth, 'Max')) : null,
+      avgdepth: depth ? parseFloat(textIn(depth, 'Avg')) : null,
+      duration: Math.round(parseFloat(textIn(header, 'Duration'))) || null,
+      temp_min: toCelsius(textIn(header, 'MinTemperature') || textIn(header, 'Temperature')),
+      temp_surface: toCelsius(textIn(header, 'SurfaceTemperature')),
       samples,
-      device_name: device ? (textOf(device, 'Name') || 'Suunto') : 'Suunto',
+      device_name: device ? (textIn(device, 'Name') || 'Suunto') : 'Suunto',
+    })));
+  }
+  return rows;
+}
+
+// ── Suunto SDM: the XML inside a DM3/DM4 .sde archive ──────────────────────
+
+/**
+ * Suunto's own export, one <MSG> per dive. Written in a Finnish locale, so
+ * decimals are commas and dates are day-first; everything is already metric
+ * and Celsius. A temperature of 0 means the computer recorded none.
+ */
+function parseSuuntoSdm(doc) {
+  const num = (raw) => {
+    const n = parseFloat(String(raw || '').replace(',', '.'));
+    return isFinite(n) ? n : null;
+  };
+  const rows = [];
+  for (const msg of deep(doc.documentElement, 'MSG')) {
+    const when = splitDateTime(`${textOf(msg, 'DATE')} ${textOf(msg, 'TIME')}`);
+    if (!when) continue;
+
+    const samples = [];
+    for (const s of kids(msg, 'SAMPLE')) {
+      const t = num(textOf(s, 'SAMPLETIME'));
+      const d = num(textOf(s, 'DEPTH'));
+      if (t == null || d == null) continue;
+      samples.push([Math.round(t * 1000), d, toCelsius(textOf(s, 'TEMPERATURE'))]);
+    }
+    // Suunto writes 0 for "no reading"; carry the last real one forward so the
+    // profile is coloured throughout rather than only at the first sample.
+    let carried = toCelsius(textOf(msg, 'WATERTEMPMAXDEPTH'));
+    for (const smp of samples) { if (smp[2] == null) smp[2] = carried; else carried = smp[2]; }
+
+    const o2 = num(textOf(msg, 'O2PCT')) || 21;
+    const he = num(textOf(msg, 'HEPCT_0')) || 0;
+    const site = [textOf(msg, 'SITE'), textOf(msg, 'LOCATION')].filter(Boolean);
+
+    rows.push(fromSamples(diveRow({
+      ...when,
+      maxdepth: num(textOf(msg, 'MAXDEPTH')),
+      avgdepth: num(textOf(msg, 'MEANDEPTH')),
+      duration: num(textOf(msg, 'DIVETIMESEC')),
+      temp_min: toCelsius(textOf(msg, 'WATERTEMPMAXDEPTH')),
+      temp_surface: toCelsius(textOf(msg, 'AIRTEMP')),
+      gasmixes: [{ o2, he, n2: Math.max(0, 100 - o2 - he), usage: 0 }],
+      samples,
+      site_name: site.join(', '),
+      device_name: textOf(msg, 'DEVICEMODEL') || 'Suunto',
+    })));
+  }
+  return rows;
+}
+
+// ── Suunto JSON: EON Steel/Core, D5, Ocean ────────────────────────────────
+
+/**
+ * What the modern Suunto computers and the Suunto app write. Times are
+ * absolute stamps per sample, temperatures Kelvin, depths metres. Samples
+ * without a depth are event markers, not readings.
+ */
+function parseSuuntoJson(data) {
+  const logs = [];
+  const collect = (node) => {
+    if (Array.isArray(node)) { node.forEach(collect); return; }
+    if (!node || typeof node !== 'object') return;
+    if (node.DeviceLog) return collect(node.DeviceLog);
+    if (node.DeviceLogs) return collect(node.DeviceLogs);
+    if (node.Header || node.Samples) logs.push(node);
+  };
+  collect(data);
+
+  const rows = [];
+  for (const log of logs) {
+    const header = log.Header || {};
+    const when = splitDateTime(String(header.DateTime || '').replace(/\.\d+/, ''));
+    if (!when) continue;
+    const start = Date.parse(header.DateTime);
+
+    const samples = [];
+    for (const s of (log.Samples || [])) {
+      if (typeof s.Depth !== 'number') continue;
+      const stamp = Date.parse(s.TimeISO8601);
+      const at = isFinite(stamp) && isFinite(start)
+        ? stamp - start
+        : samples.length * (Number(header.SampleInterval) || 10) * 1000;
+      samples.push([Math.max(0, Math.round(at)), Math.round(s.Depth * 100) / 100,
+                    toCelsius(s.Temperature)]);
+    }
+
+    const depth = header.Depth || {};
+    const device = (header.Device && header.Device.Name) || (log.Device && log.Device.Name);
+    rows.push(fromSamples(diveRow({
+      ...when,
+      maxdepth: Number(depth.Max) || null,
+      avgdepth: Number(depth.Avg) || null,
+      duration: Math.round(Number(header.Duration)) || null,
+      samples,
+      device_name: device ? `Suunto ${device}`.replace(/^Suunto Suunto/, 'Suunto') : 'Suunto',
     })));
   }
   return rows;
@@ -426,7 +532,16 @@ function parseText(name, text) {
     if (root === 'sml' || deep(doc.documentElement, 'DeviceLog').length) {
       return { format: 'Suunto SML', dives: parseSuuntoSml(doc) };
     }
+    if (root === 'suunto') return { format: 'Suunto DM3/DM4', dives: parseSuuntoSdm(doc) };
     throw new Error(`Unsupported XML (<${root}>) — export as UDDF instead.`);
+  }
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    let data;
+    try { data = JSON.parse(trimmed); }
+    catch { throw new Error('That JSON file could not be read.'); }
+    const dives = parseSuuntoJson(data);
+    if (!dives.length) throw new Error('No dives found in that JSON file.');
+    return { format: 'Suunto JSON', dives };
   }
   if (/\.csv$|\.txt$/i.test(name) || /[,;\t].*[,;\t]/.test(trimmed.split('\n')[0] || '')) {
     return { format: 'CSV', dives: parseCsv(trimmed) };
@@ -454,7 +569,7 @@ DL.parseDiveFile = async (file) => {
     const dives = [];
     const formats = new Set();
     for (const part of parts) {
-      if (!/\.(sml|xml|uddf|ssrf|csv)$/i.test(part.name)) continue;
+      if (!/\.(sml|xml|uddf|ssrf|csv|json)$/i.test(part.name)) continue;
       try {
         const r = parseText(part.name, part.text);
         formats.add(r.format);
@@ -476,8 +591,9 @@ DL.importHelp = [
    'Open Shearwater Cloud on a computer, select the dives, then File → Export → UDDF ' +
    '(or CSV). Import the saved file here.'],
   ['Suunto',
-   'In Suunto DM5, File → Export and choose UDDF, or the .sde archive. ' +
-   'A single dive exported from the Suunto app as .sml works too.'],
+   'In Suunto DM5, File → Export and choose UDDF, or the .sde archive from ' +
+   'DM3/DM4. A dive exported from a modern Suunto (EON, D5, Ocean) as .sml ' +
+   'or .json works too.'],
   ['Subsurface',
    'File → Export → Subsurface XML for everything, or UDDF for a selection.'],
   ['Anything else',
@@ -511,9 +627,9 @@ DL.openImport = () => {
 
     <label class="drop" id="im-drop">
       <input type="file" id="im-file" multiple
-             accept=".uddf,.xml,.ssrf,.sml,.sde,.zip,.csv,.txt" hidden>
+             accept=".uddf,.xml,.ssrf,.sml,.sde,.zip,.csv,.json,.txt" hidden>
       <span class="drop-main">Choose files</span>
-      <span class="small">or drag them here — UDDF, Subsurface XML, Suunto SML/SDE, CSV</span>
+      <span class="small">or drag them here — UDDF, Subsurface XML, Suunto SML/SDE/JSON, CSV</span>
     </label>
 
     <div id="im-status" class="small" style="margin:12px 0" role="status"></div>

@@ -83,6 +83,37 @@ Number,Dive Date,Start Time,Max Depth (ft),Dive Duration (min),Min Temp (F),Loca
 41,08/31/2026,16:37,82.3,42.8,46.4,Pikkusilta,Perdix
 42,09/21/2026,16:33,119.1,40,45,Pikkusilta,Perdix`;
 
+// Suunto's own export, as found inside a DM3/DM4 .sde: comma decimals,
+// day-first dates, and 0 where the computer recorded no temperature.
+const SDM = `<?xml version="1.0" encoding="ISO-8859-15" ?>
+<SUUNTO><HEADER><MSGNAME>SDM001A</MSGNAME></HEADER>
+<MSG><SAMPLECNT>3</SAMPLECNT>
+<DATE>17.05.2011</DATE><TIME>11:01:00</TIME>
+<MAXDEPTH>24,69</MAXDEPTH><MEANDEPTH>11,89</MEANDEPTH>
+<SITE>Sund Rock</SITE><LOCATION>Hoodsport, WA</LOCATION>
+<AIRTEMP>14</AIRTEMP><WATERTEMPMAXDEPTH>10</WATERTEMPMAXDEPTH>
+<DEVICEMODEL>Vyper</DEVICEMODEL><DIVETIMESEC>1890</DIVETIMESEC><O2PCT>32</O2PCT>
+<SAMPLE><SAMPLETIME>0</SAMPLETIME><DEPTH>0</DEPTH><TEMPERATURE>14</TEMPERATURE></SAMPLE>
+<SAMPLE><SAMPLETIME>30</SAMPLETIME><DEPTH>2,74</DEPTH><TEMPERATURE>0</TEMPERATURE></SAMPLE>
+<SAMPLE><SAMPLETIME>60</SAMPLETIME><DEPTH>24,69</DEPTH><TEMPERATURE>10</TEMPERATURE></SAMPLE>
+</MSG></SUUNTO>`;
+
+// What a modern Suunto (EON, D5, Ocean) writes: absolute stamps per sample,
+// Kelvin temperatures, and event-only samples with no depth.
+const SUUNTO_JSON = JSON.stringify({ DeviceLog: {
+  Header: {
+    DateTime: '2024-10-06T02:33:51.530+02:00',
+    Depth: { Avg: 13.26, Max: 22.65 },
+    Duration: 3970, SampleInterval: 10,
+    Device: { Name: 'EON Core', SerialNumber: '2804271178' },
+  },
+  Samples: [
+    { Events: [{ GasSwitch: { GasNumber: 1 } }], TimeISO8601: '2024-10-06T02:33:51.530+02:00' },
+    { Depth: 1.55, Temperature: 302.85, TimeISO8601: '2024-10-06T02:33:52.196+02:00' },
+    { Depth: 22.65, Temperature: 302.25, TimeISO8601: '2024-10-06T02:34:02.196+02:00' },
+  ],
+} });
+
 /** A zip holding one stored (uncompressed) file, as a .sde of SML. */
 function storedZip(name, content) {
   const enc = new TextEncoder();
@@ -220,6 +251,29 @@ function boot(dives) {
      `${m0.date} ${m0.maxdepth} ${m0.duration}`);
   ok('SML temperatures in Celsius', m0.temp_min === 4.5, String(m0.temp_min));
   ok('device named from the file', m0.device_name === 'Suunto D5', m0.device_name);
+
+  const sdm = await DL.parseDiveFile(file('0.xml', SDM));
+  ok('Suunto DM3/DM4 XML recognised', sdm.format === 'Suunto DM3/DM4', sdm.format);
+  const q0 = sdm.dives[0];
+  ok('day-first dates and comma decimals read',
+     q0.date === '2011-05-17' && q0.maxdepth === 24.69, `${q0.date} ${q0.maxdepth}`);
+  ok('site and location joined', q0.site_name === 'Sund Rock, Hoodsport, WA', q0.site_name);
+  ok('"no reading" temperatures carry the last one forward',
+     q0.samples[1][2] === 14, JSON.stringify(q0.samples));
+  ok('the Suunto model is kept', q0.device_name === 'Vyper', q0.device_name);
+
+  const sjson = await DL.parseDiveFile(file('dive.json', SUUNTO_JSON));
+  ok('Suunto JSON recognised', sjson.format === 'Suunto JSON', sjson.format);
+  const j0 = sjson.dives[0];
+  ok('JSON header read', j0.date === '2024-10-06' && j0.time === '02:33:51' &&
+     j0.maxdepth === 22.65 && j0.duration === 3970,
+     `${j0.date} ${j0.time} ${j0.maxdepth} ${j0.duration}`);
+  ok('event-only samples are not readings', j0.samples.length === 2,
+     String(j0.samples.length));
+  ok('sample times are measured from the start of the dive',
+     j0.samples[1][0] - j0.samples[0][0] === 10000, JSON.stringify(j0.samples));
+  ok('JSON temperatures in Celsius', j0.samples[0][2] === 29.7, String(j0.samples[0][2]));
+  ok('the computer is named', j0.device_name === 'Suunto EON Core', j0.device_name);
 
   const sde = await DL.parseDiveFile(file('dives.sde', storedZip('dive1.sml', SML)));
   ok('a .sde archive is opened', sde.dives.length === 1 && sde.dives[0].maxdepth === 25,
