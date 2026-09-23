@@ -6,7 +6,7 @@ const path = require('path');
 
 const WEB = path.join(__dirname, '..');
 
-const ORDER = ['util', 'api', 'catalogue', 'charts', 'ui', 'views', 'map', 'logdive', 'app'];
+const ORDER = ['util', 'api', 'catalogue', 'charts', 'ui', 'views', 'map', 'logdive', 'import', 'app'];
 
 /** index.html with the CDN assets removed and the local scripts inlined. */
 function buildHtml() {

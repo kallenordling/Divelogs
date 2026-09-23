@@ -48,7 +48,10 @@ gitignores. Locally they are already present.
 Plain HTML, CSS and JavaScript — no framework and no build step. Deployed
 free on GitHub Pages at
 **<https://kallenordling.github.io/Divelogs/>**, and installable to the
-home screen on both Android and iPhone. See [`web/README.md`](web/README.md)
+home screen on both Android and iPhone. It reads dives exported from other
+services too — UDDF (Shearwater Cloud, Suunto DM5, MacDive), Subsurface XML,
+Suunto SML and `.sde`, and CSV — through **Import** on the dives screen.
+See [`web/README.md`](web/README.md)
 for the layout, the tests, and the row-level-security policies worth
 confirming before sharing the URL.
 

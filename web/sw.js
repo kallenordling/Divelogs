@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const VERSION = 'deeplog-v5';
+const VERSION = 'deeplog-v6';
 const SHELL = `${VERSION}-shell`;
 const DATA = `${VERSION}-data`;
 const RUNTIME = `${VERSION}-runtime`;
@@ -29,6 +29,7 @@ const SHELL_FILES = [
   './js/views.js',
   './js/map.js',
   './js/logdive.js',
+  './js/import.js',
   './js/app.js',
   './manifest.webmanifest',
   './icons/icon-192.png',

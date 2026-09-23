@@ -580,3 +580,16 @@ select.input {
   background: var(--elevated); color: var(--text); border-color: var(--border);
 }
 .leaflet-bar a:hover { background: #17394F; color: var(--text); }
+
+/* ── Import ──────────────────────────────────────────────────────────────── */
+
+.drop {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: var(--s5) var(--s4); text-align: center; cursor: pointer;
+  border: 1px dashed var(--border-soft); border-radius: var(--r-lg);
+  background: var(--surface-2, var(--surface)); color: var(--text-2);
+}
+.drop:hover, .drop.over { border-color: var(--accent); color: var(--text); }
+.drop-main { font-weight: 600; color: var(--text); }
+.small.err { color: var(--danger); }
+tr.muted td { opacity: .55; }

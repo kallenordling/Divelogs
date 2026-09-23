@@ -31,10 +31,12 @@ DL.renderDives = async () => {
       ${DL.emptyState({
         icon: 'wave',
         title: 'No dives yet',
-        detail: 'Your next adventure starts here. Log a dive by hand, or download one from your computer in the phone app.',
-        action: '<button class="btn btn-primary" data-act="log">Log your first dive</button>',
+        detail: 'Your next adventure starts here. Log a dive by hand, import a file from another dive log, or download from your computer in the phone app.',
+        action: '<button class="btn btn-primary" data-act="log">Log your first dive</button>'
+              + '<button class="btn btn-ghost" data-act="import">Import from a file</button>',
       })}`;
     view.querySelector('[data-act="log"]').addEventListener('click', () => DL.openLogDive());
+    view.querySelector('[data-act="import"]').addEventListener('click', () => DL.openImport());
     return;
   }
 
@@ -62,7 +64,8 @@ DL.renderDives = async () => {
     </div>
 
     ${DL.sectionHead('Recent dives',
-      `<span class="count tnum">${shown.length}${shown.length !== dives.length ? ` of ${dives.length}` : ''}</span>`)}
+      `<span class="count tnum">${shown.length}${shown.length !== dives.length ? ` of ${dives.length}` : ''}</span>
+       <button class="btn btn-ghost btn-sm" data-act="import">Import</button>`)}
 
     <div class="search" style="margin-bottom:14px">
       ${DL.icon('search')}
@@ -76,6 +79,9 @@ DL.renderDives = async () => {
         : DL.emptyState({ icon: 'search', title: 'Nothing matches',
                           detail: `No dive matches “${DL.filters.dives}”.` })}
     </div>`;
+
+  const importBtn = view.querySelector('[data-act="import"]');
+  if (importBtn) importBtn.addEventListener('click', () => DL.openImport());
 
   const search = DL.el('dive-search');
   search.addEventListener('input', async (e) => {
