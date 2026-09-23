@@ -12,7 +12,7 @@
  */
 'use strict';
 
-const VERSION = 'deeplog-v7';
+const VERSION = 'deeplog-v8';
 const SHELL = `${VERSION}-shell`;
 const DATA = `${VERSION}-data`;
 const RUNTIME = `${VERSION}-runtime`;

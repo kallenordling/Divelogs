@@ -276,14 +276,11 @@ DL.siteProfile = (siteDives, view = null) => {
     return out;
   };
 
-  // Daily values for every month with two or more dives. Each day takes
-  // the nearest dive before it and the nearest after it, and blends their
-  // depth and their temperature at each depth by how far through the gap it
-  // falls. A month with a single dive shows only that dive: one reading is
-  // not enough to say how the month went.
-  const monthOf = (t) => { const d = new Date(t); return d.getFullYear() * 12 + d.getMonth(); };
-  const perMonth = new Map();
-  for (const v of dives) perMonth.set(monthOf(v.when), (perMonth.get(monthOf(v.when)) || 0) + 1);
+  // A day between two dives no more than two weeks apart takes a value of
+  // its own: depth and the temperature at each depth blended by how far
+  // through the gap it falls. Across a longer gap the water is left blank,
+  // because nothing was measured in between.
+  const MAX_GAP = 14 * DAY;
 
   let fill = '';
   const startDay = new Date(first); startDay.setHours(0, 0, 0, 0);
@@ -292,10 +289,10 @@ DL.siteProfile = (siteDives, view = null) => {
   while (startDay.getTime() + DAY < t0) startDay.setDate(startDay.getDate() + 1);
   for (let day = startDay.getTime(); day < Math.min(last, t1); day += DAY) {
     const noon = day + DAY / 2;
-    if ((perMonth.get(monthOf(noon)) || 0) < 2) continue;
     while (i < dives.length - 2 && dives[i + 1].when <= noon) i++;
     const a = dives[i], z = dives[i + 1];
     if (!(a.when <= noon && noon <= z.when)) continue;
+    if (z.when - a.when > MAX_GAP) continue;
     const f = (noon - a.when) / ((z.when - a.when) || 1);
     const depth = a.maxD + (z.maxD - a.maxD) * f;
     const x0 = x(day), x1 = x(day + DAY);
@@ -387,7 +384,7 @@ DL.siteProfile = (siteDives, view = null) => {
       <text x="${L - 8}" y="${H - 9}" fill="#668595" font-size="10.5" text-anchor="end">m</text>
     </svg>
     <div class="chart-legend">
-      ${hasTemp ? '<span>▼ marks each dive · colour is water temperature · months with several dives are interpolated day by day</span>'
+      ${hasTemp ? '<span>▼ marks each dive · colour is water temperature · dives up to two weeks apart are joined day by day</span>'
                 : '<span>No temperature recorded here</span>'}
       ${zoomNote}
       <span>${visible.length} dive${visible.length === 1 ? '' : 's'}<span class="no-export"> · tap one to open it</span></span>
